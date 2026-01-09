@@ -23,7 +23,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-n=_7b9yl+4=^y5=k^s9#!6$tvm2v=aow4d&$3@g-n(fyog^ws%'
-# SECRET_KEY = os.getenv('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -84,18 +83,18 @@ WSGI_APPLICATION = 'nursing_practical.wsgi.application'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    },
     # 'default': {
-    #     'ENGINE': os.getenv('ENGINE'),
-    #     'NAME': os.getenv('NAME'),
-    #     'USER': os.getenv('USER'),
-    #     'PASSWORD': os.getenv('PASSWORD'),
-    #     'HOST': os.getenv('HOST'),
-    #     'PORT': int(os.getenv('PORT')),
-    # }
+    #     'ENGINE': 'django.db.backends.sqlite3',
+    #     'NAME': BASE_DIR / 'db.sqlite3',
+    # },
+    'default': {
+        'ENGINE': os.getenv('ENGINE'),
+        'NAME': os.getenv('NAME'),
+        'USER': os.getenv('USER'),
+        'PASSWORD': os.getenv('PASSWORD'),
+        'HOST': os.getenv('HOST'),
+        'PORT': int(os.getenv('PORT')),
+    }
 }
 
 
