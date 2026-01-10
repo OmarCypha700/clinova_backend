@@ -15,6 +15,7 @@ from .views import (
     ProcedureViewSet,
     ProcedureStepViewSet,
     StudentGradesView,
+    ProgramViewSet,
     # ExportGradesView,
     # ExportStudentsView,
     ImportStudentsView,
@@ -27,6 +28,7 @@ from .views import (
 # Router for viewsets
 router = DefaultRouter()
 router.register(r'admin/examiners', ExaminerViewSet, basename='examiner')
+router.register(r'admin/programs', ProgramViewSet, basename='admin-program')
 router.register(r'admin/students', StudentViewSet, basename='admin-student')
 router.register(r'admin/procedures', ProcedureViewSet, basename='admin-procedure')
 router.register(r'admin/procedure-steps', ProcedureStepViewSet, basename='admin-procedure-step')
