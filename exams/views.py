@@ -1538,6 +1538,7 @@ class ImportStudentsView(APIView):
         return self._process_import(reader)
     
     def _import_excel(self, file):
+        from openpyxl import load_workbook
         wb = load_workbook(file)
         ws = wb.active
         
@@ -1567,11 +1568,18 @@ class ImportStudentsView(APIView):
                 index_number = str(row.get('Index Number', '')).strip()
                 full_name = str(row.get('Full Name', '')).strip()
                 program_name = str(row.get('Program', '')).strip()
+                level_str = str(row.get('Level', '100')).strip()
                 is_active_str = str(row.get('Status', 'Yes')).strip()
                 
                 # Validate required fields
                 if not index_number or not full_name or not program_name:
                     errors.append(f"Row {row_num}: Missing required fields")
+                    error_count += 1
+                    continue
+                
+                # Validate and parse level
+                if level_str not in ['100', '200', '300', '400']:
+                    errors.append(f"Row {row_num}: Invalid level '{level_str}'. Must be 100, 200, 300, or 400")
                     error_count += 1
                     continue
                 
@@ -1592,6 +1600,7 @@ class ImportStudentsView(APIView):
                     defaults={
                         'full_name': full_name,
                         'program': program,
+                        'level': level_str,
                         'is_active': is_active,
                     }
                 )
@@ -1619,14 +1628,15 @@ class DownloadStudentTemplateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminUser]
     
     def get(self, request):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        
         wb = Workbook()
         ws = wb.active
         ws.title = "Students Template"
         
-        # Headers with instructions
-        from openpyxl.styles import Font, PatternFill
-        
-        ws.append(['Index Number', 'Full Name', 'Program', 'Status'])
+        # Headers
+        ws.append(['Index Number', 'Full Name', 'Program', 'Level', 'Status'])
         
         # Style headers
         for cell in ws[1]:
@@ -1634,8 +1644,10 @@ class DownloadStudentTemplateView(APIView):
             cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         
         # Add sample data
-        ws.append(['STU001', 'John Doe', 'Bachelor of Science in Nursing', 'Yes'])
-        ws.append(['STU002', 'Jane Smith', 'Diploma in Nursing', 'Yes'])
+        ws.append(['L100-001', 'John Doe', 'Registered General Nursing', '100', 'Yes'])
+        ws.append(['L200-002', 'Jane Smith', 'Public Health Nursing', '200', 'Yes'])
+        ws.append(['L300-003', 'Bob Johnson', 'Registered Midwifery', '300', 'Yes'])
+        ws.append(['L300-004', 'Jane Johnson', 'Registered Nursing Assistant (Preventive)', '300', 'Yes'])
         
         # Add instructions sheet
         ws_instructions = wb.create_sheet("Instructions")
@@ -1646,12 +1658,19 @@ class DownloadStudentTemplateView(APIView):
             ['   - Index Number: Unique student ID (required)'],
             ['   - Full Name: Student full name (required)'],
             ['   - Program: Must match existing program name exactly (required)'],
+            ['   - Level: Student level - 100, 200, 300, or 400 (required)'],
             ['   - Status: Yes/No or Active/Inactive (optional, defaults to Yes)'],
             [''],
-            ['2. Do not modify the header row'],
-            ['3. You can add multiple students at once'],
-            ['4. Existing students (same Index Number) will be updated'],
-            ['5. Save as Excel (.xlsx) or CSV (.csv) file'],
+            ['2. Level Options:'],
+            ['   - 100 = Level 100 (First Year)'],
+            ['   - 200 = Level 200 (Second Year)'],
+            ['   - 300 = Level 300 (Third Year)'],
+            ['   - 400 = Level 400 (Fourth Year)'],
+            [''],
+            ['3. Do not modify the header row'],
+            ['4. You can add multiple students at once'],
+            ['5. Existing students (same Index Number) will be updated'],
+            ['6. Save as Excel (.xlsx) or CSV (.csv) file'],
         ]
         
         for row in instructions:
@@ -1678,4 +1697,50 @@ class DownloadStudentTemplateView(APIView):
         wb.save(response)
         
         return response
+
+
+class BulkDeleteStudentsView(APIView):
+    """Bulk delete students"""
+    permission_classes = [IsAuthenticated, IsAdminUser]
     
+    @transaction.atomic
+    def post(self, request):
+        student_ids = request.data.get('student_ids', [])
+        
+        if not student_ids:
+            return Response(
+                {'error': 'No student IDs provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not isinstance(student_ids, list):
+            return Response(
+                {'error': 'student_ids must be a list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get students to delete
+            students = Student.objects.filter(id__in=student_ids)
+            count = students.count()
+            
+            if count == 0:
+                return Response(
+                    {'error': 'No students found with provided IDs'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Delete students
+            students.delete()
+            
+            return Response({
+                'success': True,
+                'deleted_count': count,
+                'message': f'Successfully deleted {count} student(s)'
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )   

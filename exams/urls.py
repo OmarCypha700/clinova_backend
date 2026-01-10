@@ -21,6 +21,7 @@ from .views import (
     DownloadStudentTemplateView,
     ImportProceduresView,
     DownloadProcedureTemplateView,
+    BulkDeleteStudentsView,
 )
 
 # Router for viewsets
@@ -42,6 +43,7 @@ urlpatterns = [
     # Student import/export
     path("students/import/", ImportStudentsView.as_view(), name='import-students'),
     path("students/template/", DownloadStudentTemplateView.as_view(), name='student-template'),
+    path("students/bulk-delete/", BulkDeleteStudentsView.as_view(), name='bulk-delete-students'),
     
     # Reconciliation
     path("students/<int:student_id>/procedures/<int:procedure_id>/reconciliation/", 
