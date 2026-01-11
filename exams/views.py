@@ -1193,6 +1193,305 @@ class ProgramViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
 
+# class StudentGradesView(APIView):
+#     """Get or export grades for all students"""
+#     permission_classes = [IsAuthenticated]
+    
+#     def get(self, request):
+#         # Check if this is an export request
+#         export_format = request.query_params.get('export')
+        
+#         if export_format:
+#             return self._handle_export(request, export_format)
+        
+#         # Regular grades fetch
+#         program_id = request.query_params.get('program_id')
+#         search = request.query_params.get('search', '')
+#         sort_by = request.query_params.get('sort_by', 'index_number')
+#         order = request.query_params.get('order', 'asc')
+        
+#         students = Student.objects.select_related('program').filter(is_active=True)
+        
+#         if program_id:
+#             students = students.filter(program_id=program_id)
+        
+#         if search:
+#             students = students.filter(
+#                 Q(full_name__icontains=search) | 
+#                 Q(index_number__icontains=search)
+#             )
+        
+#         grades_data = []
+#         for student in students:
+#             reconciled_procedures = StudentProcedure.objects.filter(
+#                 student=student,
+#                 status='reconciled'
+#             ).select_related('procedure').prefetch_related('reconciled_scores')
+            
+#             if not reconciled_procedures.exists():
+#                 grades_data.append({
+#                     'student_id': student.id,
+#                     'index_number': student.index_number,
+#                     'full_name': student.full_name,
+#                     'program_name': student.program.name,
+#                     'program_id': student.program.id,
+#                     'total_score': 0,
+#                     'max_score': 0,
+#                     'percentage': 0,
+#                     'grade': 'N/A',
+#                     'procedures_count': 0,
+#                     'reconciled_count': 0,
+#                 })
+#                 continue
+            
+#             total_score = 0
+#             max_score = 0
+            
+#             for sp in reconciled_procedures:
+#                 # Use reconciled scores from separate table
+#                 procedure_score = sp.reconciled_scores.aggregate(
+#                     total=Sum('score')
+#                 )['total'] or 0
+                
+#                 total_score += procedure_score
+#                 max_score += sp.procedure.total_score
+            
+#             # Calculate percentage
+#             percentage = (total_score / max_score * 100) if max_score > 0 else 0
+#             grade = self._calculate_grade(percentage)
+            
+#             total_procedures = Procedure.objects.filter(
+#                 program=student.program
+#             ).count()
+            
+#             grades_data.append({
+#                 'student_id': student.id,
+#                 'index_number': student.index_number,
+#                 'full_name': student.full_name,
+#                 'program_name': student.program.name,
+#                 'program_id': student.program.id,
+#                 'total_score': round(total_score, 2),
+#                 'max_score': max_score,
+#                 'percentage': round(percentage, 2),
+#                 'grade': grade,
+#                 'procedures_count': total_procedures,
+#                 'reconciled_count': reconciled_procedures.count(),
+#             })
+        
+#         reverse = order == 'desc'
+#         grades_data.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+        
+#         return Response(grades_data)
+    
+#     def _handle_export(self, request, export_format):
+#         """Handle export requests"""
+#         print(f"Exporting as {export_format}")
+        
+#         # Get grades data by calling the main logic
+#         request_copy = request._request if hasattr(request, '_request') else request
+#         temp_params = request_copy.GET.copy()
+#         if 'export' in temp_params:
+#             del temp_params['export']
+#         request_copy.GET = temp_params
+        
+#         # Fetch grades data
+#         grades_data = self._fetch_grades_data(request)
+        
+#         if export_format == 'csv':
+#             return self._export_csv(grades_data)
+#         elif export_format == 'excel':
+#             return self._export_excel(grades_data)
+#         elif export_format == 'pdf':
+#             return self._export_pdf(grades_data)
+#         else:
+#             return Response({'error': 'Invalid export format'}, status=400)
+    
+#     def _fetch_grades_data(self, request):
+#         """Fetch grades data without the export parameter"""
+#         program_id = request.query_params.get('program_id')
+#         search = request.query_params.get('search', '')
+        
+#         students = Student.objects.select_related('program').filter(is_active=True)
+        
+#         if program_id:
+#             students = students.filter(program_id=program_id)
+        
+#         if search:
+#             students = students.filter(
+#                 Q(full_name__icontains=search) | 
+#                 Q(index_number__icontains=search)
+#             )
+        
+#         grades_data = []
+#         for student in students:
+#             reconciled_procedures = StudentProcedure.objects.filter(
+#                 student=student,
+#                 status='reconciled'
+#             ).select_related('procedure')
+            
+#             if not reconciled_procedures.exists():
+#                 grades_data.append({
+#                     'index_number': student.index_number,
+#                     'full_name': student.full_name,
+#                     'program_name': student.program.name,
+#                     'total_score': 0,
+#                     'max_score': 0,
+#                     'percentage': 0,
+#                     'grade': 'N/A',
+#                 })
+#                 continue
+            
+#             total_score = 0
+#             max_score = 0
+            
+#             for sp in reconciled_procedures:
+#                 step_scores = sp.step_scores.values('step').annotate(
+#                     latest_score=Sum('score')
+#                 ).distinct()
+                
+#                 procedure_score = sum([s['latest_score'] for s in step_scores])
+#                 total_score += procedure_score
+#                 max_score += sp.procedure.total_score
+            
+#             percentage = (total_score / max_score * 100) if max_score > 0 else 0
+            
+#             grades_data.append({
+#                 'index_number': student.index_number,
+#                 'full_name': student.full_name,
+#                 'program_name': student.program.name,
+#                 'total_score': round(total_score, 2),
+#                 'max_score': max_score,
+#                 'percentage': round(percentage, 2),
+#                 'grade': self._calculate_grade(percentage),
+#             })
+        
+#         return grades_data
+    
+#     def _calculate_grade(self, percentage):
+#         if percentage >= 80:
+#             return 'Distinction'
+#         elif percentage >= 70 and percentage < 80:
+#             return 'Credit'
+#         elif percentage >= 60 and percentage < 70:
+#             return 'Pass'
+#         else:
+#             return 'Fail'
+    
+#     def _export_csv(self, data):
+#         response = HttpResponse(content_type='text/csv')
+#         response['Content-Disposition'] = 'attachment; filename="student_grades.csv"'
+        
+#         writer = csv.writer(response)
+#         writer.writerow([
+#             'Index Number', 'Full Name', 'Program', 
+#             'Total Score', 'Max Score', 'Percentage (%)', 'Grade'
+#         ])
+        
+#         for item in data:
+#             writer.writerow([
+#                 item['index_number'],
+#                 item['full_name'],
+#                 item['program_name'],
+#                 item['total_score'],
+#                 item['max_score'],
+#                 item['percentage'],
+#                 item['grade'],
+#             ])
+        
+#         return response
+    
+#     def _export_excel(self, data):
+#         wb = Workbook()
+#         ws = wb.active
+#         ws.title = "Student Grades"
+        
+#         headers = [
+#             'Index Number', 'Full Name', 'Program', 
+#             'Total Score', 'Max Score', 'Percentage (%)', 'Grade'
+#         ]
+#         ws.append(headers)
+        
+#         for cell in ws[1]:
+#             cell.font = Font(bold=True)
+        
+#         for item in data:
+#             ws.append([
+#                 item['index_number'],
+#                 item['full_name'],
+#                 item['program_name'],
+#                 item['total_score'],
+#                 item['max_score'],
+#                 item['percentage'],
+#                 item['grade'],
+#             ])
+        
+#         for column in ws.columns:
+#             max_length = 0
+#             column_letter = column[0].column_letter
+#             for cell in column:
+#                 try:
+#                     if len(str(cell.value)) > max_length:
+#                         max_length = len(cell.value)
+#                 except:
+#                     pass
+#             adjusted_width = min(max_length + 2, 50)
+#             ws.column_dimensions[column_letter].width = adjusted_width
+        
+#         response = HttpResponse(
+#             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+#         )
+#         response['Content-Disposition'] = 'attachment; filename="student_grades.xlsx"'
+#         wb.save(response)
+        
+#         return response
+    
+#     def _export_pdf(self, data):
+#         response = HttpResponse(content_type='application/pdf')
+#         response['Content-Disposition'] = 'attachment; filename="student_grades.pdf"'
+        
+#         doc = SimpleDocTemplate(response, pagesize=landscape(letter))
+#         elements = []
+        
+#         styles = getSampleStyleSheet()
+#         title = Paragraph("Student Grades Report", styles['Title'])
+#         elements.append(title)
+#         elements.append(Paragraph("<br/><br/>", styles['Normal']))
+        
+#         table_data = [[
+#             'Index', 'Name', 'Program', 
+#             'Score', 'Max', 'Percentage', 'Grade'
+#         ]]
+        
+#         for item in data:
+#             table_data.append([
+#                 item['index_number'],
+#                 item['full_name'],
+#                 item['program_name'],
+#                 str(item['total_score']),
+#                 str(item['max_score']),
+#                 f"{item['percentage']}%",
+#                 item['grade'],
+#             ])
+        
+#         table = Table(table_data)
+#         table.setStyle(TableStyle([
+#             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+#             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+#             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+#             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+#             ('FONTSIZE', (0, 0), (-1, 0), 10),
+#             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+#             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+#             ('GRID', (0, 0), (-1, -1), 1, colors.black),
+#             ('FONTSIZE', (0, 1), (-1, -1), 8),
+#         ]))
+        
+#         elements.append(table)
+#         doc.build(elements)
+        
+#         return response
+
+
 class StudentGradesView(APIView):
     """Get or export grades for all students"""
     permission_classes = [IsAuthenticated]
@@ -1228,6 +1527,11 @@ class StudentGradesView(APIView):
                 status='reconciled'
             ).select_related('procedure').prefetch_related('reconciled_scores')
             
+            # Get total procedures for this program
+            total_procedures = Procedure.objects.filter(
+                program=student.program
+            ).count()
+            
             if not reconciled_procedures.exists():
                 grades_data.append({
                     'student_id': student.id,
@@ -1239,7 +1543,7 @@ class StudentGradesView(APIView):
                     'max_score': 0,
                     'percentage': 0,
                     'grade': 'N/A',
-                    'procedures_count': 0,
+                    'procedures_count': total_procedures,
                     'reconciled_count': 0,
                 })
                 continue
@@ -1259,10 +1563,6 @@ class StudentGradesView(APIView):
             # Calculate percentage
             percentage = (total_score / max_score * 100) if max_score > 0 else 0
             grade = self._calculate_grade(percentage)
-            
-            total_procedures = Procedure.objects.filter(
-                program=student.program
-            ).count()
             
             grades_data.append({
                 'student_id': student.id,
@@ -1327,7 +1627,14 @@ class StudentGradesView(APIView):
             reconciled_procedures = StudentProcedure.objects.filter(
                 student=student,
                 status='reconciled'
-            ).select_related('procedure')
+            ).select_related('procedure').prefetch_related('reconciled_scores')
+            
+            # Get total procedures for this program
+            total_procedures = Procedure.objects.filter(
+                program=student.program
+            ).count()
+            
+            reconciled_count = reconciled_procedures.count()
             
             if not reconciled_procedures.exists():
                 grades_data.append({
@@ -1338,18 +1645,20 @@ class StudentGradesView(APIView):
                     'max_score': 0,
                     'percentage': 0,
                     'grade': 'N/A',
+                    'progress': '0/4', #f'0/{total_procedures}',
+                    'reconciled_count': 0,
                 })
                 continue
             
             total_score = 0
             max_score = 0
             
+            # FIXED: Use reconciled_scores instead of step_scores
             for sp in reconciled_procedures:
-                step_scores = sp.step_scores.values('step').annotate(
-                    latest_score=Sum('score')
-                ).distinct()
+                procedure_score = sp.reconciled_scores.aggregate(
+                    total=Sum('score')
+                )['total'] or 0
                 
-                procedure_score = sum([s['latest_score'] for s in step_scores])
                 total_score += procedure_score
                 max_score += sp.procedure.total_score
             
@@ -1363,35 +1672,21 @@ class StudentGradesView(APIView):
                 'max_score': max_score,
                 'percentage': round(percentage, 2),
                 'grade': self._calculate_grade(percentage),
+                'progress': f'{reconciled_count}/4', #f'{reconciled_count}/{total_procedures}',
+                'reconciled_count': reconciled_count,
             })
         
         return grades_data
     
     def _calculate_grade(self, percentage):
-        if percentage >= 90:
-            return 'A+'
-        elif percentage >= 85:
-            return 'A'
-        elif percentage >= 80:
-            return 'A-'
-        elif percentage >= 75:
-            return 'B+'
-        elif percentage >= 70:
-            return 'B'
-        elif percentage >= 65:
-            return 'B-'
-        elif percentage >= 60:
-            return 'C+'
-        elif percentage >= 55:
-            return 'C'
-        elif percentage >= 50:
-            return 'C-'
-        elif percentage >= 45:
-            return 'D+'
-        elif percentage >= 40:
-            return 'D'
+        if percentage >= 80:
+            return 'Distinction'
+        elif percentage >= 70 and percentage < 80:
+            return 'Credit'
+        elif percentage >= 60 and percentage < 70:
+            return 'Pass'
         else:
-            return 'F'
+            return 'Fail'
     
     def _export_csv(self, data):
         response = HttpResponse(content_type='text/csv')
@@ -1400,7 +1695,7 @@ class StudentGradesView(APIView):
         writer = csv.writer(response)
         writer.writerow([
             'Index Number', 'Full Name', 'Program', 
-            'Total Score', 'Max Score', 'Percentage (%)', 'Grade'
+            'Total Score', 'Max Score', 'Percentage (%)', 'Grade', 'Progress'
         ])
         
         for item in data:
@@ -1412,6 +1707,7 @@ class StudentGradesView(APIView):
                 item['max_score'],
                 item['percentage'],
                 item['grade'],
+                item['progress'],
             ])
         
         return response
@@ -1423,7 +1719,7 @@ class StudentGradesView(APIView):
         
         headers = [
             'Index Number', 'Full Name', 'Program', 
-            'Total Score', 'Max Score', 'Percentage (%)', 'Grade'
+            'Total Score', 'Max Score', 'Percentage (%)', 'Grade', 'Progress'
         ]
         ws.append(headers)
         
@@ -1439,6 +1735,7 @@ class StudentGradesView(APIView):
                 item['max_score'],
                 item['percentage'],
                 item['grade'],
+                item['progress'],
             ])
         
         for column in ws.columns:
@@ -1475,7 +1772,7 @@ class StudentGradesView(APIView):
         
         table_data = [[
             'Index', 'Name', 'Program', 
-            'Score', 'Max', 'Percentage', 'Grade'
+            'Score', 'Max', 'Percentage', 'Grade', 'Progress'
         ]]
         
         for item in data:
@@ -1487,6 +1784,7 @@ class StudentGradesView(APIView):
                 str(item['max_score']),
                 f"{item['percentage']}%",
                 item['grade'],
+                item['progress'],
             ])
         
         table = Table(table_data)
