@@ -37,7 +37,6 @@ class ProgramListView(ListAPIView):
     queryset = Program.objects.all()
     serializer_class = ProgramSerializer
 
-
 class StudentByProgramView(ListAPIView):
     serializer_class = StudentSerializer
 
@@ -65,7 +64,6 @@ class ProcedureByProgramView(ListAPIView):
         # Get student_id from query params
         context["student_id"] = self.request.query_params.get("student_id")
         return context
-
 
 class ProcedureDetailView(RetrieveAPIView):
     queryset = Procedure.objects.all()
@@ -111,7 +109,6 @@ class ProcedureDetailView(RetrieveAPIView):
         context = super().get_serializer_context()
         context["student_id"] = self.kwargs.get("student_id")
         return context
-
 
 class AutosaveStepScoreView(APIView):
     """
@@ -189,7 +186,6 @@ class AutosaveStepScoreView(APIView):
             status=status.HTTP_200_OK,
         )
 
-
 class ReconciliationView(RetrieveAPIView):
     """
     GET endpoint to fetch StudentProcedure with both examiners' scores for reconciliation
@@ -217,7 +213,6 @@ class ReconciliationView(RetrieveAPIView):
         
         return obj
     
-
 class SaveReconciliationView(APIView):
     """
     POST endpoint to save reconciled scores
@@ -347,7 +342,6 @@ class AssignExaminersView(APIView):
             status=status.HTTP_200_OK
         )
     
-
 class StudentDetailView(RetrieveAPIView):
     """Get student details by ID"""
     queryset = Student.objects.all()
@@ -392,7 +386,6 @@ class ExaminerViewSet(viewsets.ModelViewSet):
         user.is_active = not user.is_active
         user.save()
         return Response({'is_active': user.is_active})
-
 
 class StudentViewSet(viewsets.ModelViewSet):
     """CRUD operations for students with export functionality"""
@@ -811,7 +804,6 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         doc.build(elements)
         return response
 
-
 class ImportProceduresView(APIView):
     """Import procedures and steps from Excel file (multi-sheet)"""
     permission_classes = [IsAuthenticated, IsAdminUser]
@@ -1075,7 +1067,6 @@ class ImportProceduresView(APIView):
         except Exception as e:
             return Response({'error': f'Import failed: {str(e)}'}, status=400)
 
-
 class DownloadProcedureTemplateView(APIView):
     """Download template for procedures and steps import"""
     permission_classes = [IsAuthenticated, IsAdminUser]
@@ -1172,7 +1163,6 @@ class DownloadProcedureTemplateView(APIView):
         
         return response
 
-
 class ProcedureStepViewSet(viewsets.ModelViewSet):
     """CRUD operations for procedure steps"""
     queryset = ProcedureStep.objects.select_related('procedure').all()
@@ -1186,13 +1176,11 @@ class ProcedureStepViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(procedure_id=procedure_id)
         return queryset
 
-
 class ProgramViewSet(viewsets.ModelViewSet):
     """CRUD operations for programs"""
     queryset = Program.objects.all()
     serializer_class = ProgramSerializer
     permission_classes = [IsAuthenticated]
-
 
 class CarePlanView(APIView):
     """Get or create care plan for a student"""
@@ -1238,7 +1226,6 @@ class CarePlanView(APIView):
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 class StudentGradesView(APIView):
     """Get or export grades for all students"""
@@ -1378,12 +1365,12 @@ class StudentGradesView(APIView):
             'Index Number',
             'Full Name',
             'Program',
-            'Procedure Score',
-            'Care Plan Score',
-            'Total Score',
+            # 'Procedure Score',
+            # 'Care Plan Score',
+            # 'Total Score',
             'Percentage (%)',
             'Grade',
-            'Procedure Progress',
+            # 'Procedure Progress',
         ])
 
         for item in data:
@@ -1391,12 +1378,12 @@ class StudentGradesView(APIView):
                 item['index_number'],
                 item['full_name'],
                 item['program_name'],
-                f"{item['procedure_score']}/{item['procedure_max_score']}",
-                f"{item['care_plan_score']}/{item['care_plan_max_score']}",
-                f"{item['total_score']}/{item['max_score']}",
+                # f"{item['procedure_score']}/{item['procedure_max_score']}",
+                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
+                # f"{item['total_score']}/{item['max_score']}",
                 item['percentage'],
                 item['grade'],
-                item['progress'],
+                # item['progress'],
             ])
 
         return response
@@ -1410,12 +1397,12 @@ class StudentGradesView(APIView):
             'Index Number',
             'Full Name',
             'Program',
-            'Procedure Score',
-            'Care Plan Score',
-            'Total Score',
+            # 'Procedure Score',
+            # 'Care Plan Score',
+            # 'Total Score',
             'Percentage (%)',
             'Grade',
-            'Procedure Progress',
+            # 'Procedure Progress',
         ]
         ws.append(headers)
 
@@ -1427,12 +1414,12 @@ class StudentGradesView(APIView):
                 item['index_number'],
                 item['full_name'],
                 item['program_name'],
-                f"{item['procedure_score']}/{item['procedure_max_score']}",
-                f"{item['care_plan_score']}/{item['care_plan_max_score']}",
-                f"{item['total_score']}/{item['max_score']}",
+                # f"{item['procedure_score']}/{item['procedure_max_score']}",
+                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
+                # f"{item['total_score']}/{item['max_score']}",
                 item['percentage'],
                 item['grade'],
-                item['progress'],
+                # item['progress'],
             ])
 
         for column in ws.columns:
@@ -1462,12 +1449,12 @@ class StudentGradesView(APIView):
             'Index Number',
             'Full Name',
             'Program',
-            'Procedure Score',
-            'Care Plan Score',
-            'Total Score',
+            # 'Procedure Score',
+            # 'Care Plan Score',
+            # 'Total Score',
             'Percentage (%)',
             'Grade',
-            'Procedure Progress',
+            # 'Procedure Progress',
         ]]
 
         for item in data:
@@ -1475,12 +1462,12 @@ class StudentGradesView(APIView):
                 item['index_number'],
                 item['full_name'],
                 item['program_name'],
-                f"{item['procedure_score']}/{item['procedure_max_score']}",
-                f"{item['care_plan_score']}/{item['care_plan_max_score']}",
-                f"{item['total_score']}/{item['max_score']}",
+                # f"{item['procedure_score']}/{item['procedure_max_score']}",
+                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
+                # f"{item['total_score']}/{item['max_score']}",
                 f"{item['percentage']}%",
                 item['grade'],
-                item['progress'],
+                # item['progress'],
             ])
 
         table = Table(table_data, repeatRows=1)
@@ -1498,7 +1485,6 @@ class StudentGradesView(APIView):
         doc.build(elements)
 
         return response
-
 
 class ImportStudentsView(APIView):
     """Import students from Excel or CSV file"""
@@ -1614,7 +1600,6 @@ class ImportStudentsView(APIView):
             'error_details': errors[:10],  # Limit to first 10 errors
         })
 
-
 class DownloadStudentTemplateView(APIView):
     """Download a template Excel file for student import"""
     permission_classes = [IsAuthenticated, IsAdminUser]
@@ -1689,7 +1674,6 @@ class DownloadStudentTemplateView(APIView):
         wb.save(response)
         
         return response
-
 
 class BulkDeleteStudentsView(APIView):
     """Bulk delete students"""
