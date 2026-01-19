@@ -1,70 +1,3 @@
-# from rest_framework.views import APIView
-# from rest_framework.response import Response
-# from rest_framework.permissions import AllowAny, IsAuthenticated
-# from rest_framework import status
-# from rest_framework.decorators import api_view, permission_classes
-# from rest_framework_simplejwt.tokens import RefreshToken
-
-# from .serializers import LoginSerializer, UserSerializer
-
-
-# class LoginView(APIView):
-#     permission_classes = [AllowAny]
-
-#     def post(self, request):
-#         serializer = LoginSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-
-#         user = serializer.validated_data["user"]
-
-#         # Generate JWT tokens
-#         refresh = RefreshToken.for_user(user)
-#         access_token = str(refresh.access_token)
-#         refresh_token = str(refresh)
-
-#         return Response(
-#             {
-#                 "access": access_token,
-#                 "refresh": refresh_token,
-#                 "user": UserSerializer(user).data,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
-
-
-# class LogoutView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def post(self, request):
-#         try:
-#             refresh_token = request.data.get("refresh")
-#             if refresh_token:
-#                 token = RefreshToken(refresh_token)
-#                 token.blacklist()
-#         except Exception:
-#             pass
-
-#         return Response(
-#             {"detail": "Successfully logged out"},
-#             status=status.HTTP_200_OK,
-#         )
-
-
-# @api_view(['GET'])
-# @permission_classes([IsAuthenticated])
-# def current_user(request):
-#     """Get current authenticated user info"""
-#     user = request.user
-#     return Response({
-#         'id': user.pk,
-#         'username': user.username,
-#         'email': user.email,
-#         'first_name': user.first_name,
-#         'last_name': user.last_name,
-#         'role': user.role,
-#     })
-
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -84,7 +17,7 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
+        serializer = LoginSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
 
         user = serializer.validated_data["user"]
@@ -93,12 +26,21 @@ class LoginView(APIView):
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
+        
+        # Add school info to token
+        refresh['school_id'] = user.school.id if user.school else None
+        refresh['school_name'] = user.school.name if user.school else None
 
         return Response(
             {
                 "access": access_token,
                 "refresh": refresh_token,
                 "user": UserSerializer(user).data,
+                "school": {
+                    "id": user.school.id,
+                    "name": user.school.name,
+                    "subdomain": user.school.subdomain,
+                } if user.school else None,
             },
             status=status.HTTP_200_OK,
         )
@@ -134,13 +76,18 @@ def current_user(request):
         'first_name': user.first_name,
         'last_name': user.last_name,
         'role': user.role,
+        'school': {
+            'id': user.school.id,
+            'name': user.school.name,
+            'subdomain': user.school.subdomain,
+        } if user.school else None,
     })
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def export_examiners(request):
-    """Export all examiners to CSV"""
+    """Export all examiners to CSV (filtered by school)"""
     examiners = User.objects.filter(role='examiner')
     
     response = HttpResponse(content_type='text/csv')
@@ -165,7 +112,7 @@ def export_examiners(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def import_examiners(request):
-    """Import examiners from CSV file"""
+    """Import examiners from CSV file (scoped to current school)"""
     if 'file' not in request.FILES:
         return Response(
             {'error': 'No file provided'},
@@ -180,6 +127,13 @@ def import_examiners(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
+    school = request.school
+    if not school:
+        return Response(
+            {'error': 'School not identified'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
     try:
         decoded_file = csv_file.read().decode('utf-8')
         io_string = io.StringIO(decoded_file)
@@ -190,20 +144,24 @@ def import_examiners(request):
         
         for row_number, row in enumerate(reader, start=2):
             try:
-                # Check if username already exists
-                if User.objects.filter(username=row['Username']).exists():
-                    errors.append(f"Row {row_number}: Username '{row['Username']}' already exists")
+                # Check if username already exists in this school
+                if User.objects.filter(
+                    school=school, 
+                    username=row['Username']
+                ).exists():
+                    errors.append(f"Row {row_number}: Username '{row['Username']}' already exists in this school")
                     continue
                 
                 # Create examiner
                 User.objects.create(
+                    school=school,
                     username=row['Username'],
                     email=row['Email'],
                     first_name=row['First Name'],
                     last_name=row['Last Name'],
                     role='examiner',
                     is_active=row.get('Is Active', 'True').lower() in ['true', '1', 'yes'],
-                    password=make_password(row.get('Password', 'changeme123'))  # Default password if not provided
+                    password=make_password(row.get('Password', 'changeme123'))
                 )
                 created_count += 1
             except KeyError as e:

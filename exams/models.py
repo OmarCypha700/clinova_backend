@@ -1,17 +1,25 @@
 from django.db import models
 from accounts.models import User
 from django.db.models import Sum
+from core.managers import TenantModel
 
 
-class Program(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    abbreviation = models.CharField(max_length=20, unique=True, null=True, blank=True)
+class Program(TenantModel):
+    name = models.CharField(max_length=100)
+    abbreviation = models.CharField(max_length=20, null=True, blank=True)
+
+    class Meta:
+        unique_together = [['school', 'name']]
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['school', 'name']),
+        ]
 
     def __str__(self):
-        return self.name
+        return f"{self.name} ({self.school.name})"
 
 
-class Student(models.Model):
+class Student(TenantModel):
     LEVEL_CHOICES = [
         ('100', 'Level 100'),
         ('200', 'Level 200'),
@@ -19,7 +27,7 @@ class Student(models.Model):
         ('400', 'Level 400'),
     ]
     
-    index_number = models.CharField(max_length=50, unique=True)
+    index_number = models.CharField(max_length=50)
     full_name = models.CharField(max_length=255)
     program = models.ForeignKey(Program, on_delete=models.PROTECT)
     level = models.CharField(max_length=3, choices=LEVEL_CHOICES, default='100')
@@ -27,24 +35,37 @@ class Student(models.Model):
 
     class Meta:
         ordering = ["level", "index_number"]
+        unique_together = [['school', 'index_number']]
+        indexes = [
+            models.Index(fields=['school', 'index_number']),
+            models.Index(fields=['school', 'program']),
+            models.Index(fields=['school', 'level']),
+        ]
 
     def __str__(self):
         return f"{self.index_number} - {self.full_name}"
 
 
-class Procedure(models.Model):
+class Procedure(TenantModel):
     program = models.ForeignKey(Program, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     total_score = models.PositiveIntegerField()
 
     class Meta:
-        unique_together = ("program", "name")
+        unique_together = [['school', 'program', 'name']]
+        indexes = [
+            models.Index(fields=['school', 'program']),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.program})"
 
 
 class ProcedureStep(models.Model):
+    """
+    Note: ProcedureStep doesn't need school FK as it's already
+    linked through Procedure which has school FK
+    """
     procedure = models.ForeignKey(
         Procedure,
         on_delete=models.CASCADE,
@@ -55,13 +76,13 @@ class ProcedureStep(models.Model):
 
     class Meta:
         ordering = ["step_order"]
-        unique_together = ("procedure", "step_order")
+        unique_together = [['procedure', 'step_order']]
 
     def __str__(self):
         return f"{self.procedure.name} - Step {self.step_order}"
 
 
-class StudentProcedure(models.Model):
+class StudentProcedure(TenantModel):
     STATUS_CHOICES = (
         ("pending", "Pending"),
         ("scored", "Scored"),
@@ -100,7 +121,11 @@ class StudentProcedure(models.Model):
     reconciled_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        unique_together = ("student", "procedure")
+        unique_together = [['school', 'student', 'procedure']]
+        indexes = [
+            models.Index(fields=['school', 'status']),
+            models.Index(fields=['school', 'student']),
+        ]
 
     def __str__(self):
         return f"{self.student} - {self.procedure}"
@@ -119,6 +144,9 @@ class StudentProcedure(models.Model):
 
 
 class ProcedureStepScore(models.Model):
+    """
+    Note: Linked through StudentProcedure which has school FK
+    """
     student_procedure = models.ForeignKey(
         "StudentProcedure",
         on_delete=models.CASCADE,
@@ -139,14 +167,14 @@ class ProcedureStepScore(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = ("student_procedure", "step", "examiner", "is_reconciled")
+        unique_together = [['student_procedure', 'step', 'examiner', 'is_reconciled']]
 
     def __str__(self):
         return f"{self.step} = {self.score}"
 
 
 class ReconciledScore(models.Model):
-    """Final reconciled scores - separate from examiner scores"""
+    """Final reconciled scores - linked through StudentProcedure"""
     student_procedure = models.ForeignKey(
         StudentProcedure,
         on_delete=models.CASCADE,
@@ -165,14 +193,14 @@ class ReconciledScore(models.Model):
     reconciled_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        unique_together = ("student_procedure", "step")
+        unique_together = [['student_procedure', 'step']]
         ordering = ['step__step_order']
     
     def __str__(self):
         return f"{self.student_procedure.student} - {self.step} = {self.score} (reconciled)"
     
 
-class CarePlan(models.Model):
+class CarePlan(TenantModel):
     """Care Plan assessment - single examiner scoring"""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='care_plans')
     program = models.ForeignKey(Program, on_delete=models.CASCADE)
@@ -181,15 +209,17 @@ class CarePlan(models.Model):
     max_score = models.PositiveIntegerField(default=20)
     comments = models.TextField(blank=True, null=True)
     assessed_at = models.DateTimeField(auto_now_add=True)
-    is_locked = models.BooleanField(default=True)  # Locked after submission
+    is_locked = models.BooleanField(default=True)
     
     class Meta:
-        unique_together = ('student', 'program')
+        unique_together = [['school', 'student', 'program']]
         ordering = ['-assessed_at']
+        indexes = [
+            models.Index(fields=['school', 'student']),
+        ]
     
     def __str__(self):
         return f"{self.student} - Care Plan ({self.score}/{self.max_score})"
     
     def get_percentage(self):
         return (self.score / self.max_score * 100) if self.max_score > 0 else 0
-

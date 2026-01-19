@@ -1,17 +1,38 @@
 from django.contrib import admin
 from import_export import resources, fields, widgets
 from import_export.admin import ImportExportModelAdmin, ExportActionMixin
-# from accounts.models import User
 from .models import Program, Student, Procedure, ProcedureStep, StudentProcedure, ProcedureStepScore, ReconciledScore, CarePlan
-from import_export.admin import ImportExportModelAdmin
+
+
+class TenantAdminMixin:
+    """Mixin to automatically filter by school in admin"""
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        if hasattr(request.user, 'school') and request.user.school:
+            # Use all_objects to bypass tenant filtering, then filter manually
+            if hasattr(self.model, 'all_objects'):
+                return self.model.all_objects.filter(school=request.user.school)
+            return qs.filter(school=request.user.school)
+        return qs.none()
+    
+    def save_model(self, request, obj, form, change):
+        """Auto-assign school to new objects"""
+        if not change and hasattr(obj, 'school') and not obj.school_id:
+            if hasattr(request.user, 'school'):
+                obj.school = request.user.school
+        super().save_model(request, obj, form, change)
+
 
 # ============== RESOURCES ==============
 
 class ProgramResource(resources.ModelResource):
     class Meta:
         model = Program
-        fields = ('id', 'name', 'abbreviation')
-        export_order = ('id', 'name', 'abbreviation')
+        fields = ('id', 'name', 'abbreviation', 'school__name')
+        export_order = ('id', 'name', 'abbreviation', 'school__name')
 
 
 class StudentResource(resources.ModelResource):
@@ -27,9 +48,9 @@ class StudentResource(resources.ModelResource):
     
     class Meta:
         model = Student
-        fields = ('id', 'index_number', 'full_name', 'program_name', 'level', 'level_display', 'is_active')
-        export_order = ('id', 'index_number', 'full_name', 'program_name', 'level', 'level_display', 'is_active')
-        import_id_fields = ['index_number']
+        fields = ('id', 'index_number', 'full_name', 'program_name', 'level', 'level_display', 'is_active', 'school__name')
+        export_order = ('id', 'index_number', 'full_name', 'program_name', 'level', 'level_display', 'is_active', 'school__name')
+        import_id_fields = ['index_number', 'school']
 
 
 class ProcedureResource(resources.ModelResource):
@@ -41,84 +62,31 @@ class ProcedureResource(resources.ModelResource):
     
     class Meta:
         model = Procedure
-        fields = ('id', 'program_name', 'name', 'total_score')
-        export_order = ('id', 'program_name', 'name', 'total_score')
-        import_id_fields = ['program_name', 'name']
-
-
-class ProcedureStepResource(resources.ModelResource):
-    procedure_name = fields.Field(
-        column_name='procedure_name',
-        attribute='procedure',
-        widget=widgets.ForeignKeyWidget(Procedure, 'name')
-    )
-    
-    class Meta:
-        model = ProcedureStep
-        fields = ('id', 'procedure_name', 'description', 'step_order')
-        export_order = ('id', 'procedure_name', 'description', 'step_order')
-
-
-class StudentProcedureResource(resources.ModelResource):
-    student_index = fields.Field(
-        column_name='student_index',
-        attribute='student',
-        widget=widgets.ForeignKeyWidget(Student, 'index_number')
-    )
-    procedure_name = fields.Field(
-        column_name='procedure_name',
-        attribute='procedure',
-        widget=widgets.ForeignKeyWidget(Procedure, 'name')
-    )
-    examiner_a_username = fields.Field(
-        column_name='examiner_a_username',
-        attribute='examiner_a__username'
-    )
-    examiner_b_username = fields.Field(
-        column_name='examiner_b_username',
-        attribute='examiner_b__username'
-    )
-    
-    class Meta:
-        model = StudentProcedure
-        fields = (
-            'id', 'student_index', 'procedure_name', 
-            'examiner_a_username', 'examiner_b_username', 
-            'status', 'assessed_at'
-        )
-        export_order = (
-            'id', 'student_index', 'procedure_name',
-            'examiner_a_username', 'examiner_b_username',
-            'status', 'assessed_at'
-        )
+        fields = ('id', 'program_name', 'name', 'total_score', 'school__name')
+        export_order = ('id', 'program_name', 'name', 'total_score', 'school__name')
 
 
 # ============== ADMIN CLASSES ==============
 
 @admin.register(Program)
-class ProgramAdmin(ImportExportModelAdmin):
+class ProgramAdmin(TenantAdminMixin, ImportExportModelAdmin):
     resource_class = ProgramResource
-    list_display = ('name', 'abbreviation')
-    search_fields = ('name', 'abbreviation')
-
-    # Disable logging to avoid Django 5.x incompatibility
-    def log_addition(self, request, object, message):
-        pass
-    
-    def log_change(self, request, object, message):
-        pass
-    
-    def log_deletion(self, request, object, object_repr):
-        pass
+    list_display = ('name', 'abbreviation', 'school')
+    list_filter = ('school',)
+    search_fields = ('name', 'abbreviation', 'school__name')
+    def get_queryset(self, request):
+        return Program.all_objects.all()
 
 
 @admin.register(Student)
-class StudentAdmin(ImportExportModelAdmin):
+class StudentAdmin(TenantAdminMixin, ImportExportModelAdmin):
     resource_class = StudentResource
-    list_display = ('index_number', 'full_name', 'program', 'level', 'is_active')
-    list_filter = ('program', 'level', 'is_active')
-    search_fields = ('index_number', 'full_name')
-    ordering = ('level', 'index_number')
+    list_display = ('index_number', 'full_name', 'program', 'level', 'school', 'is_active')
+    list_filter = ('school', 'program', 'level', 'is_active')
+    search_fields = ('index_number', 'full_name', 'school__name')
+    ordering = ('school', 'level', 'index_number')
+    def get_queryset(self, request):
+        return Student.all_objects.all()
 
 
 class ProcedureStepInline(admin.TabularInline):
@@ -129,79 +97,61 @@ class ProcedureStepInline(admin.TabularInline):
 
 
 @admin.register(Procedure)
-class ProcedureAdmin(ImportExportModelAdmin):
+class ProcedureAdmin(TenantAdminMixin, ImportExportModelAdmin):
     resource_class = ProcedureResource
-    list_display = ('name', 'program', 'total_score', 'get_steps_count')
-    list_filter = ('program',)
-    search_fields = ('name',)
+    list_display = ('name', 'program', 'school', 'total_score', 'get_steps_count')
+    list_filter = ('school', 'program')
+    search_fields = ('name', 'school__name')
     inlines = [ProcedureStepInline]
+
+    def get_queryset(self, request):
+        return Procedure.all_objects.all()
     
     def get_steps_count(self, obj):
         return obj.steps.count()
     get_steps_count.short_description = 'Steps Count'
 
-    # Disable logging to avoid Django 5.x incompatibility
-    def log_addition(self, request, object, message):
-        pass
-    
-    def log_change(self, request, object, message):
-        pass
-    
-    def log_deletion(self, request, object, object_repr):
-        pass
-
 
 @admin.register(ProcedureStep)
-class ProcedureStepAdmin(ImportExportModelAdmin):
-    resource_class = ProcedureStepResource
-    list_display = ('procedure', 'step_order', 'description_preview')
-    list_filter = ('procedure',)
-    ordering = ('procedure', 'step_order')
+class ProcedureStepAdmin(admin.ModelAdmin):
+    list_display = ('procedure', 'step_order', 'description_preview', 'get_school')
+    list_filter = ('procedure__school', 'procedure')
+    ordering = ('procedure__school', 'procedure', 'step_order')
     
     def description_preview(self, obj):
         return obj.description[:50] + '...' if len(obj.description) > 50 else obj.description
     description_preview.short_description = 'Description'
 
-    # Disable logging to avoid Django 5.x incompatibility
-    def log_addition(self, request, object, message):
-        pass
+    def get_queryset(self, request):
+        return ProcedureStep.all_objects.all()
     
-    def log_change(self, request, object, message):
-        pass
-    
-    def log_deletion(self, request, object, object_repr):
-        pass
+    def get_school(self, obj):
+        return obj.procedure.school
+    get_school.short_description = 'School'
 
 
 @admin.register(StudentProcedure)
-class StudentProcedureAdmin(ImportExportModelAdmin, ExportActionMixin):
-    resource_class = StudentProcedureResource
+class StudentProcedureAdmin(TenantAdminMixin, ImportExportModelAdmin, ExportActionMixin):
     list_display = (
-        'student', 'procedure', 'examiner_a', 'examiner_b', 
+        'student', 'procedure', 'school', 'examiner_a', 'examiner_b', 
         'status', 'assessed_at'
     )
-    list_filter = ('status', 'procedure', 'assessed_at')
+    list_filter = ('school', 'status', 'procedure', 'assessed_at')
     search_fields = (
         'student__index_number', 'student__full_name',
-        'procedure__name'
+        'procedure__name', 'school__name'
     )
     date_hierarchy = 'assessed_at'
 
-    # # Disable logging to avoid Django 5.x incompatibility
-    # def log_addition(self, request, object, message):
-    #     pass
-    
-    # def log_change(self, request, object, message):
-    #     pass
-    
-    # def log_deletion(self, request, object, object_repr):
-    #     pass
+    def get_queryset(self, request):
+        return StudentProcedure.all_objects.all()
 
 
 @admin.register(ProcedureStepScore)
 class ProcedureStepScoreAdmin(admin.ModelAdmin):
     list_display = (
-        'student_procedure', 'step', 'examiner', 'score', 'updated_at', 'is_reconciled'
+        'student_procedure', 'step', 'examiner', 'score', 
+        'updated_at', 'is_reconciled', 'get_school'
     )
     list_filter = ('score', 'examiner', 'updated_at', 'is_reconciled')
     search_fields = (
@@ -211,12 +161,19 @@ class ProcedureStepScoreAdmin(admin.ModelAdmin):
     )
     date_hierarchy = 'updated_at'
 
+    def get_queryset(self, request):
+        return ProcedureStepScore.all_objects.all()
+    
+    def get_school(self, obj):
+        return obj.student_procedure.school
+    get_school.short_description = 'School'
+
 
 @admin.register(ReconciledScore)
 class ReconciledScoreAdmin(admin.ModelAdmin):
     list_display = (
         'student_procedure', 'step', 'score', 
-        'reconciled_by', 'reconciled_at'
+        'reconciled_by', 'reconciled_at', 'get_school'
     )
     list_filter = ('reconciled_by', 'reconciled_at')
     search_fields = (
@@ -226,12 +183,21 @@ class ReconciledScoreAdmin(admin.ModelAdmin):
     )
     date_hierarchy = 'reconciled_at'
 
+    def get_queryset(self, request):
+        return ReconciledScore.all_objects.all()
+    
+    def get_school(self, obj):
+        return obj.student_procedure.school
+    get_school.short_description = 'School'
 
-# Care Plan Admin
+
 @admin.register(CarePlan)
-class CarePlanAdmin(admin.ModelAdmin):
-    list_display = ('student', 'program', 'examiner', 'score', 'max_score', 'assessed_at', 'is_locked')
-    list_filter = ('program', 'is_locked', 'assessed_at')
-    search_fields = ('student__index_number', 'student__full_name', 'examiner__username')
+class CarePlanAdmin(TenantAdminMixin, admin.ModelAdmin):
+    list_display = ('student', 'program', 'school', 'examiner', 'score', 'max_score', 'assessed_at', 'is_locked')
+    list_filter = ('school', 'program', 'is_locked', 'assessed_at')
+    search_fields = ('student__index_number', 'student__full_name', 'examiner__username', 'school__name')
     date_hierarchy = 'assessed_at'
     readonly_fields = ('assessed_at',)
+
+    def get_queryset(self, request):
+        return CarePlan.all_objects.all()
