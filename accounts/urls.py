@@ -1,15 +1,3 @@
-# from django.urls import path
-# from rest_framework_simplejwt.views import TokenRefreshView
-# from .views import LoginView, LogoutView, current_user
-
-# urlpatterns = [
-#     path("login/", LoginView.as_view(), name="login"),
-#     path("logout/", LogoutView.as_view(), name="logout"),
-#     path('me/', current_user, name='current-user'),
-#     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-# ]
-
-
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
@@ -17,7 +5,8 @@ from .views import (
     LogoutView, 
     current_user,
     export_examiners,
-    import_examiners
+    import_examiners,
+    change_password,
 )
 
 urlpatterns = [
@@ -27,4 +16,5 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('examiners/export/', export_examiners, name='export-examiners'),
     path('examiners/import/', import_examiners, name='import-examiners'),
+    path('change-password/', change_password, name='change-password'),
 ]
