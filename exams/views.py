@@ -539,7 +539,9 @@ class StudentDetailView(RetrieveAPIView):
     serializer_class = StudentSerializer
 
 
-# ================ ADMIN DASHBOARD VIEWS ==============
+# =======================
+# ADMIN DASHBOARD VIEWS 
+# ========================
 
 class DashboardStatsView(APIView):
     """Get dashboard statistics"""
@@ -577,6 +579,8 @@ class ExaminerViewSet(viewsets.ModelViewSet):
         user.is_active = not user.is_active
         user.save()
         return Response({'is_active': user.is_active})
+
+# =======================STUDENT VIEWS==============================
 
 class StudentViewSet(viewsets.ModelViewSet):
     """CRUD operations for students with export functionality"""
@@ -774,6 +778,516 @@ class StudentViewSet(viewsets.ModelViewSet):
         student.is_active = not student.is_active
         student.save()
         return Response({'is_active': student.is_active})
+
+
+class ImportStudentsView(APIView):
+    """Import students from Excel or CSV file"""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def post(self, request):
+        if 'file' not in request.FILES:
+            return Response({'error': 'No file provided'}, status=400)
+        
+        file = request.FILES['file']
+        file_extension = file.name.split('.')[-1].lower()
+        
+        if file_extension not in ['csv', 'xlsx', 'xls']:
+            return Response({'error': 'Invalid file format. Use CSV or Excel.'}, status=400)
+        
+        try:
+            if file_extension == 'csv':
+                return self._import_csv(file)
+            else:
+                return self._import_excel(file)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+    
+    def _import_csv(self, file):
+        import csv
+        decoded_file = file.read().decode('utf-8').splitlines()
+        reader = csv.DictReader(decoded_file)
+        
+        return self._process_import(reader)
+    
+    def _import_excel(self, file):
+        from openpyxl import load_workbook
+        wb = load_workbook(file)
+        ws = wb.active
+        
+        # Get headers from first row
+        headers = [cell.value for cell in ws[1]]
+        
+        # Create list of dictionaries
+        data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not any(row):  # Skip empty rows
+                continue
+            row_dict = dict(zip(headers, row))
+            data.append(row_dict)
+        
+        return self._process_import(data)
+    
+    @transaction.atomic
+    def _process_import(self, data):
+        created_count = 0
+        updated_count = 0
+        error_count = 0
+        errors = []
+        
+        for row_num, row in enumerate(data, start=2):
+            try:
+                # Get required fields
+                index_number = str(row.get('Index Number', '')).strip()
+                full_name = str(row.get('Full Name', '')).strip()
+                program_name = str(row.get('Program', '')).strip()
+                level_str = str(row.get('Level', '100')).strip()
+                is_active_str = str(row.get('Status', 'Yes')).strip()
+                
+                # Validate required fields
+                if not index_number or not full_name or not program_name:
+                    errors.append(f"Row {row_num}: Missing required fields")
+                    error_count += 1
+                    continue
+                
+                # Validate and parse level
+                if level_str not in ['100', '200', '300', '400']:
+                    errors.append(f"Row {row_num}: Invalid level '{level_str}'. Must be 100, 200, 300, or 400")
+                    error_count += 1
+                    continue
+                
+                # Get or create program
+                try:
+                    program = Program.objects.get(name=program_name)
+                except Program.DoesNotExist:
+                    errors.append(f"Row {row_num}: Program '{program_name}' not found")
+                    error_count += 1
+                    continue
+                
+                # Parse is_active
+                is_active = is_active_str.lower() in ['yes', 'true', '1', 'active']
+                
+                # Create or update student
+                student, created = Student.objects.update_or_create(
+                    index_number=index_number,
+                    defaults={
+                        'full_name': full_name,
+                        'program': program,
+                        'level': level_str,
+                        'is_active': is_active,
+                    }
+                )
+                
+                if created:
+                    created_count += 1
+                else:
+                    updated_count += 1
+                    
+            except Exception as e:
+                errors.append(f"Row {row_num}: {str(e)}")
+                error_count += 1
+        
+        return Response({
+            'success': True,
+            'created': created_count,
+            'updated': updated_count,
+            'errors': error_count,
+            'error_details': errors[:10],  # Limit to first 10 errors
+        })
+
+class DownloadStudentTemplateView(APIView):
+    """Download a template Excel file for student import"""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get(self, request):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Students Template"
+        
+        # Headers
+        ws.append(['Index Number', 'Full Name', 'Program', 'Level', 'Status'])
+        
+        # Style headers
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        
+        # Add sample data
+        ws.append(['L100-001', 'John Doe', 'Registered General Nursing', '100', 'Yes'])
+        ws.append(['L200-002', 'Jane Smith', 'Public Health Nursing', '200', 'Yes'])
+        ws.append(['L300-003', 'Bob Johnson', 'Registered Midwifery', '300', 'Yes'])
+        ws.append(['L300-004', 'Jane Johnson', 'Registered Nursing Assistant (Preventive)', '300', 'Yes'])
+        
+        # Add instructions sheet
+        ws_instructions = wb.create_sheet("Instructions")
+        instructions = [
+            ['Import Instructions'],
+            [''],
+            ['1. Fill in the required columns:'],
+            ['   - Index Number: Unique student ID (required)'],
+            ['   - Full Name: Student full name (required)'],
+            ['   - Program: Must match existing program name exactly (required)'],
+            ['   - Level: Student level - 100, 200, 300, or 400 (required)'],
+            ['   - Status: Yes/No or Active/Inactive (optional, defaults to Yes)'],
+            [''],
+            ['2. Level Options:'],
+            ['   - 100 = Level 100 (First Year)'],
+            ['   - 200 = Level 200 (Second Year)'],
+            ['   - 300 = Level 300 (Third Year)'],
+            ['   - 400 = Level 400 (Fourth Year)'],
+            [''],
+            ['3. Do not modify the header row'],
+            ['4. You can add multiple students at once'],
+            ['5. Existing students (same Index Number) will be updated'],
+            ['6. Save as Excel (.xlsx) or CSV (.csv) file'],
+        ]
+        
+        for row in instructions:
+            ws_instructions.append(row)
+        
+        # Adjust column widths
+        for ws_sheet in [ws, ws_instructions]:
+            for column in ws_sheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(cell.value)
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 60)
+                ws_sheet.column_dimensions[column_letter].width = adjusted_width
+        
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="students_import_template.xlsx"'
+        wb.save(response)
+        
+        return response
+
+class BulkDeleteStudentsView(APIView):
+    """Bulk delete students"""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    @transaction.atomic
+    def post(self, request):
+        student_ids = request.data.get('student_ids', [])
+        
+        if not student_ids:
+            return Response(
+                {'error': 'No student IDs provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not isinstance(student_ids, list):
+            return Response(
+                {'error': 'student_ids must be a list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get students to delete
+            students = Student.objects.filter(id__in=student_ids)
+            count = students.count()
+            
+            if count == 0:
+                return Response(
+                    {'error': 'No students found with provided IDs'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Delete students
+            students.delete()
+            
+            return Response({
+                'success': True,
+                'deleted_count': count,
+                'message': f'Successfully deleted {count} student(s)'
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )   
+
+
+class StudentGradesView(APIView):
+    """Get or export grades for all students"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        export_format = request.query_params.get('export')
+
+        students = self._get_students(request)
+        grades_data = self._build_grades_data(students)
+
+        if export_format:
+            if export_format == 'csv':
+                return self._export_csv(grades_data)
+            elif export_format == 'excel':
+                return self._export_excel(grades_data)
+            elif export_format == 'pdf':
+                return self._export_pdf(grades_data)
+            return Response({'error': 'Invalid export format'}, status=400)
+
+        # Sorting
+        sort_by = request.query_params.get('sort_by', 'index_number')
+        order = request.query_params.get('order', 'asc')
+        reverse = order == 'desc'
+        grades_data.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+
+        return Response(grades_data)
+
+    # ------------------------------------------------------------------
+    # Core data builders
+    # ------------------------------------------------------------------
+
+    def _get_students(self, request):
+        program_id = request.query_params.get('program_id')
+        level= request.query_params.get('level')
+        search = request.query_params.get('search', '')
+
+        students = Student.objects.select_related('program').filter(is_active=True)
+
+        if program_id:
+            students = students.filter(program_id=program_id)
+
+        if level and level != 'all':
+            students = students.filter(level=level)
+
+        # if program_id and level and level != 'all':
+        #     students = students.filter(program_id=program_id, level=level)
+
+        if search:
+            students = students.filter(
+                Q(full_name__icontains=search) |
+                Q(index_number__icontains=search)
+            )
+
+        return students
+
+    def _build_grades_data(self, students):
+        grades_data = []
+
+        for student in students:
+            reconciled_procedures = StudentProcedure.objects.filter(
+                student=student,
+                status='reconciled'
+            ).select_related('procedure').prefetch_related('reconciled_scores')
+
+            procedure_score = 0
+            procedure_max_score = 0
+
+            for sp in reconciled_procedures:
+                score = sp.reconciled_scores.aggregate(
+                    total=Sum('score')
+                )['total'] or 0
+
+                procedure_score += score
+                procedure_max_score += sp.procedure.total_score
+
+            try:
+                care_plan = CarePlan.objects.get(
+                    student=student,
+                    program=student.program
+                )
+                care_plan_score = care_plan.score
+                care_plan_max_score = care_plan.max_score
+            except CarePlan.DoesNotExist:
+                care_plan_score = 0
+                care_plan_max_score = 20
+
+            total_score = procedure_score + care_plan_score
+            max_score = procedure_max_score + care_plan_max_score
+            percentage = (total_score / max_score * 100) if max_score > 0 else 0
+
+            def calculate_total_reconciled_procedures():
+                if student.program.name == "Registered Midwifery":
+                    return 5
+                else:
+                    return 4
+
+            total_reconciled_procedures = calculate_total_reconciled_procedures()
+
+            grades_data.append({
+                'student_id': student.id,
+                'index_number': student.index_number,
+                'full_name': student.full_name,
+                'program_name': student.program.name,
+                'program_id': student.program.id,
+                'level': student.level,
+                'procedure_score': round(procedure_score, 2),
+                'procedure_max_score': procedure_max_score,
+                'care_plan_score': care_plan_score,
+                'care_plan_max_score': care_plan_max_score,
+                'total_score': round(total_score, 2),
+                'max_score': max_score,
+                'percentage': round(percentage, 1),
+                'grade': self._calculate_grade(percentage),
+                'reconciled_count': reconciled_procedures.count(),
+                'progress': f"{reconciled_procedures.count()}/{total_reconciled_procedures}",
+                'care_plan_completed': care_plan_score > 0,
+            })
+
+        return grades_data
+
+    # ------------------------------------------------------------------
+    # Grade logic
+    # ------------------------------------------------------------------
+
+    def _calculate_grade(self, percentage):
+        if percentage >= 80:
+            return 'Distinction'
+        elif percentage >= 70:
+            return 'Credit'
+        elif percentage >= 60:
+            return 'Pass'
+        return 'Fail'
+
+    # ------------------------------------------------------------------
+    # Export handlers
+    # ------------------------------------------------------------------
+
+    def _export_csv(self, data):
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="student_grades.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow([
+            'Index Number',
+            'Full Name',
+            'Program',
+            'Level',
+            # 'Procedure Score',
+            # 'Care Plan Score',
+            # 'Total Score',
+            'Percentage (%)',
+            'Grade',
+            # 'Procedure Progress',
+        ])
+
+        for item in data:
+            writer.writerow([
+                item['index_number'],
+                item['full_name'],
+                item['program_name'],
+                item['level'],
+                # f"{item['procedure_score']}/{item['procedure_max_score']}",
+                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
+                # f"{item['total_score']}/{item['max_score']}",
+                item['percentage'],
+                item['grade'],
+                # item['progress'],
+            ])
+
+        return response
+
+    def _export_excel(self, data):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Student Grades"
+
+        headers = [
+            'Index Number',
+            'Full Name',
+            'Program',
+            'Level',
+            # 'Procedure Score',
+            # 'Care Plan Score',
+            # 'Total Score',
+            'Percentage (%)',
+            'Grade',
+            # 'Procedure Progress',
+        ]
+        ws.append(headers)
+
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+
+        for item in data:
+            ws.append([
+                item['index_number'],
+                item['full_name'],
+                item['program_name'],
+                item['level'],
+                # f"{item['procedure_score']}/{item['procedure_max_score']}",
+                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
+                # f"{item['total_score']}/{item['max_score']}",
+                item['percentage'],
+                item['grade'],
+                # item['progress'],
+            ])
+
+        for column in ws.columns:
+            max_length = max(len(str(cell.value)) for cell in column if cell.value)
+            ws.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="student_grades.xlsx"'
+        wb.save(response)
+
+        return response
+
+    def _export_pdf(self, data):
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="student_grades.pdf"'
+
+        doc = SimpleDocTemplate(response, pagesize=landscape(letter))
+        styles = getSampleStyleSheet()
+        elements = []
+
+        elements.append(Paragraph("Student Grades Report", styles['Title']))
+        elements.append(Paragraph("<br/><br/>", styles['Normal']))
+
+        table_data = [[
+            'Index Number',
+            'Full Name',
+            'Program',
+            'Level',
+            # 'Procedure Score',
+            # 'Care Plan Score',
+            # 'Total Score',
+            'Percentage (%)',
+            'Grade',
+            # 'Procedure Progress',
+        ]]
+
+        for item in data:
+            table_data.append([
+                item['index_number'],
+                item['full_name'],
+                item['program_name'],
+                item['level'],
+                # f"{item['procedure_score']}/{item['procedure_max_score']}",
+                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
+                # f"{item['total_score']}/{item['max_score']}",
+                f"{item['percentage']}%",
+                item['grade'],
+                # item['progress'],
+            ])
+
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ]))
+
+        elements.append(table)
+        doc.build(elements)
+
+        return response
 
 
 # =====================PROCEDURE IMPORT VIEWS============================
@@ -1624,497 +2138,3 @@ class CarePlanView(APIView):
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# =======================STUDENT VIEWS==============================
-class StudentGradesView(APIView):
-    """Get or export grades for all students"""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        export_format = request.query_params.get('export')
-
-        students = self._get_students(request)
-        grades_data = self._build_grades_data(students)
-
-        if export_format:
-            if export_format == 'csv':
-                return self._export_csv(grades_data)
-            elif export_format == 'excel':
-                return self._export_excel(grades_data)
-            elif export_format == 'pdf':
-                return self._export_pdf(grades_data)
-            return Response({'error': 'Invalid export format'}, status=400)
-
-        # Sorting
-        sort_by = request.query_params.get('sort_by', 'index_number')
-        order = request.query_params.get('order', 'asc')
-        reverse = order == 'desc'
-        grades_data.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
-
-        return Response(grades_data)
-
-    # ------------------------------------------------------------------
-    # Core data builders
-    # ------------------------------------------------------------------
-
-    def _get_students(self, request):
-        program_id = request.query_params.get('program_id')
-        search = request.query_params.get('search', '')
-
-        students = Student.objects.select_related('program').filter(is_active=True)
-
-        if program_id:
-            students = students.filter(program_id=program_id)
-
-        if search:
-            students = students.filter(
-                Q(full_name__icontains=search) |
-                Q(index_number__icontains=search)
-            )
-
-        return students
-
-    def _build_grades_data(self, students):
-        grades_data = []
-
-        for student in students:
-            reconciled_procedures = StudentProcedure.objects.filter(
-                student=student,
-                status='reconciled'
-            ).select_related('procedure').prefetch_related('reconciled_scores')
-
-            procedure_score = 0
-            procedure_max_score = 0
-
-            for sp in reconciled_procedures:
-                score = sp.reconciled_scores.aggregate(
-                    total=Sum('score')
-                )['total'] or 0
-
-                procedure_score += score
-                procedure_max_score += sp.procedure.total_score
-
-            try:
-                care_plan = CarePlan.objects.get(
-                    student=student,
-                    program=student.program
-                )
-                care_plan_score = care_plan.score
-                care_plan_max_score = care_plan.max_score
-            except CarePlan.DoesNotExist:
-                care_plan_score = 0
-                care_plan_max_score = 20
-
-            total_score = procedure_score + care_plan_score
-            max_score = procedure_max_score + care_plan_max_score
-            percentage = (total_score / max_score * 100) if max_score > 0 else 0
-
-            def calculate_total_reconciled_procedures():
-                if student.program.name == "Registered Midwifery":
-                    return 5
-                else:
-                    return 4
-
-            total_reconciled_procedures = calculate_total_reconciled_procedures()
-
-            grades_data.append({
-                'student_id': student.id,
-                'index_number': student.index_number,
-                'full_name': student.full_name,
-                'program_name': student.program.name,
-                'program_id': student.program.id,
-                'procedure_score': round(procedure_score, 2),
-                'procedure_max_score': procedure_max_score,
-                'care_plan_score': care_plan_score,
-                'care_plan_max_score': care_plan_max_score,
-                'total_score': round(total_score, 2),
-                'max_score': max_score,
-                'percentage': round(percentage, 2),
-                'grade': self._calculate_grade(percentage),
-                'reconciled_count': reconciled_procedures.count(),
-                'progress': f"{reconciled_procedures.count()}/{total_reconciled_procedures}",
-                'care_plan_completed': care_plan_score > 0,
-            })
-
-        return grades_data
-
-    # ------------------------------------------------------------------
-    # Grade logic
-    # ------------------------------------------------------------------
-
-    def _calculate_grade(self, percentage):
-        if percentage >= 80:
-            return 'Distinction'
-        elif percentage >= 70:
-            return 'Credit'
-        elif percentage >= 60:
-            return 'Pass'
-        return 'Fail'
-
-    # ------------------------------------------------------------------
-    # Export handlers
-    # ------------------------------------------------------------------
-
-    def _export_csv(self, data):
-        response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = 'attachment; filename="student_grades.csv"'
-
-        writer = csv.writer(response)
-        writer.writerow([
-            'Index Number',
-            'Full Name',
-            'Program',
-            # 'Procedure Score',
-            # 'Care Plan Score',
-            # 'Total Score',
-            'Percentage (%)',
-            'Grade',
-            # 'Procedure Progress',
-        ])
-
-        for item in data:
-            writer.writerow([
-                item['index_number'],
-                item['full_name'],
-                item['program_name'],
-                # f"{item['procedure_score']}/{item['procedure_max_score']}",
-                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
-                # f"{item['total_score']}/{item['max_score']}",
-                item['percentage'],
-                item['grade'],
-                # item['progress'],
-            ])
-
-        return response
-
-    def _export_excel(self, data):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Student Grades"
-
-        headers = [
-            'Index Number',
-            'Full Name',
-            'Program',
-            # 'Procedure Score',
-            # 'Care Plan Score',
-            # 'Total Score',
-            'Percentage (%)',
-            'Grade',
-            # 'Procedure Progress',
-        ]
-        ws.append(headers)
-
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-
-        for item in data:
-            ws.append([
-                item['index_number'],
-                item['full_name'],
-                item['program_name'],
-                # f"{item['procedure_score']}/{item['procedure_max_score']}",
-                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
-                # f"{item['total_score']}/{item['max_score']}",
-                item['percentage'],
-                item['grade'],
-                # item['progress'],
-            ])
-
-        for column in ws.columns:
-            max_length = max(len(str(cell.value)) for cell in column if cell.value)
-            ws.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
-
-        response = HttpResponse(
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        response['Content-Disposition'] = 'attachment; filename="student_grades.xlsx"'
-        wb.save(response)
-
-        return response
-
-    def _export_pdf(self, data):
-        response = HttpResponse(content_type='application/pdf')
-        response['Content-Disposition'] = 'attachment; filename="student_grades.pdf"'
-
-        doc = SimpleDocTemplate(response, pagesize=landscape(letter))
-        styles = getSampleStyleSheet()
-        elements = []
-
-        elements.append(Paragraph("Student Grades Report", styles['Title']))
-        elements.append(Paragraph("<br/><br/>", styles['Normal']))
-
-        table_data = [[
-            'Index Number',
-            'Full Name',
-            'Program',
-            # 'Procedure Score',
-            # 'Care Plan Score',
-            # 'Total Score',
-            'Percentage (%)',
-            'Grade',
-            # 'Procedure Progress',
-        ]]
-
-        for item in data:
-            table_data.append([
-                item['index_number'],
-                item['full_name'],
-                item['program_name'],
-                # f"{item['procedure_score']}/{item['procedure_max_score']}",
-                # f"{item['care_plan_score']}/{item['care_plan_max_score']}",
-                # f"{item['total_score']}/{item['max_score']}",
-                f"{item['percentage']}%",
-                item['grade'],
-                # item['progress'],
-            ])
-
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-        ]))
-
-        elements.append(table)
-        doc.build(elements)
-
-        return response
-
-class ImportStudentsView(APIView):
-    """Import students from Excel or CSV file"""
-    permission_classes = [IsAuthenticated, IsAdminUser]
-    
-    def post(self, request):
-        if 'file' not in request.FILES:
-            return Response({'error': 'No file provided'}, status=400)
-        
-        file = request.FILES['file']
-        file_extension = file.name.split('.')[-1].lower()
-        
-        if file_extension not in ['csv', 'xlsx', 'xls']:
-            return Response({'error': 'Invalid file format. Use CSV or Excel.'}, status=400)
-        
-        try:
-            if file_extension == 'csv':
-                return self._import_csv(file)
-            else:
-                return self._import_excel(file)
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
-    
-    def _import_csv(self, file):
-        import csv
-        decoded_file = file.read().decode('utf-8').splitlines()
-        reader = csv.DictReader(decoded_file)
-        
-        return self._process_import(reader)
-    
-    def _import_excel(self, file):
-        from openpyxl import load_workbook
-        wb = load_workbook(file)
-        ws = wb.active
-        
-        # Get headers from first row
-        headers = [cell.value for cell in ws[1]]
-        
-        # Create list of dictionaries
-        data = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if not any(row):  # Skip empty rows
-                continue
-            row_dict = dict(zip(headers, row))
-            data.append(row_dict)
-        
-        return self._process_import(data)
-    
-    @transaction.atomic
-    def _process_import(self, data):
-        created_count = 0
-        updated_count = 0
-        error_count = 0
-        errors = []
-        
-        for row_num, row in enumerate(data, start=2):
-            try:
-                # Get required fields
-                index_number = str(row.get('Index Number', '')).strip()
-                full_name = str(row.get('Full Name', '')).strip()
-                program_name = str(row.get('Program', '')).strip()
-                level_str = str(row.get('Level', '100')).strip()
-                is_active_str = str(row.get('Status', 'Yes')).strip()
-                
-                # Validate required fields
-                if not index_number or not full_name or not program_name:
-                    errors.append(f"Row {row_num}: Missing required fields")
-                    error_count += 1
-                    continue
-                
-                # Validate and parse level
-                if level_str not in ['100', '200', '300', '400']:
-                    errors.append(f"Row {row_num}: Invalid level '{level_str}'. Must be 100, 200, 300, or 400")
-                    error_count += 1
-                    continue
-                
-                # Get or create program
-                try:
-                    program = Program.objects.get(name=program_name)
-                except Program.DoesNotExist:
-                    errors.append(f"Row {row_num}: Program '{program_name}' not found")
-                    error_count += 1
-                    continue
-                
-                # Parse is_active
-                is_active = is_active_str.lower() in ['yes', 'true', '1', 'active']
-                
-                # Create or update student
-                student, created = Student.objects.update_or_create(
-                    index_number=index_number,
-                    defaults={
-                        'full_name': full_name,
-                        'program': program,
-                        'level': level_str,
-                        'is_active': is_active,
-                    }
-                )
-                
-                if created:
-                    created_count += 1
-                else:
-                    updated_count += 1
-                    
-            except Exception as e:
-                errors.append(f"Row {row_num}: {str(e)}")
-                error_count += 1
-        
-        return Response({
-            'success': True,
-            'created': created_count,
-            'updated': updated_count,
-            'errors': error_count,
-            'error_details': errors[:10],  # Limit to first 10 errors
-        })
-
-class DownloadStudentTemplateView(APIView):
-    """Download a template Excel file for student import"""
-    permission_classes = [IsAuthenticated, IsAdminUser]
-    
-    def get(self, request):
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Students Template"
-        
-        # Headers
-        ws.append(['Index Number', 'Full Name', 'Program', 'Level', 'Status'])
-        
-        # Style headers
-        for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        
-        # Add sample data
-        ws.append(['L100-001', 'John Doe', 'Registered General Nursing', '100', 'Yes'])
-        ws.append(['L200-002', 'Jane Smith', 'Public Health Nursing', '200', 'Yes'])
-        ws.append(['L300-003', 'Bob Johnson', 'Registered Midwifery', '300', 'Yes'])
-        ws.append(['L300-004', 'Jane Johnson', 'Registered Nursing Assistant (Preventive)', '300', 'Yes'])
-        
-        # Add instructions sheet
-        ws_instructions = wb.create_sheet("Instructions")
-        instructions = [
-            ['Import Instructions'],
-            [''],
-            ['1. Fill in the required columns:'],
-            ['   - Index Number: Unique student ID (required)'],
-            ['   - Full Name: Student full name (required)'],
-            ['   - Program: Must match existing program name exactly (required)'],
-            ['   - Level: Student level - 100, 200, 300, or 400 (required)'],
-            ['   - Status: Yes/No or Active/Inactive (optional, defaults to Yes)'],
-            [''],
-            ['2. Level Options:'],
-            ['   - 100 = Level 100 (First Year)'],
-            ['   - 200 = Level 200 (Second Year)'],
-            ['   - 300 = Level 300 (Third Year)'],
-            ['   - 400 = Level 400 (Fourth Year)'],
-            [''],
-            ['3. Do not modify the header row'],
-            ['4. You can add multiple students at once'],
-            ['5. Existing students (same Index Number) will be updated'],
-            ['6. Save as Excel (.xlsx) or CSV (.csv) file'],
-        ]
-        
-        for row in instructions:
-            ws_instructions.append(row)
-        
-        # Adjust column widths
-        for ws_sheet in [ws, ws_instructions]:
-            for column in ws_sheet.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(cell.value)
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 60)
-                ws_sheet.column_dimensions[column_letter].width = adjusted_width
-        
-        response = HttpResponse(
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        response['Content-Disposition'] = 'attachment; filename="students_import_template.xlsx"'
-        wb.save(response)
-        
-        return response
-
-class BulkDeleteStudentsView(APIView):
-    """Bulk delete students"""
-    permission_classes = [IsAuthenticated, IsAdminUser]
-    
-    @transaction.atomic
-    def post(self, request):
-        student_ids = request.data.get('student_ids', [])
-        
-        if not student_ids:
-            return Response(
-                {'error': 'No student IDs provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        if not isinstance(student_ids, list):
-            return Response(
-                {'error': 'student_ids must be a list'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        try:
-            # Get students to delete
-            students = Student.objects.filter(id__in=student_ids)
-            count = students.count()
-            
-            if count == 0:
-                return Response(
-                    {'error': 'No students found with provided IDs'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            
-            # Delete students
-            students.delete()
-            
-            return Response({
-                'success': True,
-                'deleted_count': count,
-                'message': f'Successfully deleted {count} student(s)'
-            })
-            
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )   
