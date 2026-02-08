@@ -278,7 +278,6 @@ class ProcedureDetailView(RetrieveAPIView):
         context["student_id"] = self.kwargs.get("student_id")
         return context
 
-
 class AutosaveStepScoreView(APIView):
     """
     Autosave the score for a single step.
@@ -369,7 +368,6 @@ class AutosaveStepScoreView(APIView):
             status=status.HTTP_200_OK,
         )
 
-
 class ReconciliationView(RetrieveAPIView):
     """
     GET endpoint to fetch StudentProcedure with both examiners' scores for reconciliation
@@ -402,7 +400,6 @@ class ReconciliationView(RetrieveAPIView):
                 obj.save()
         
         return obj
-
 
 class SaveReconciliationView(APIView):
     """
@@ -561,7 +558,6 @@ class DashboardStatsView(APIView):
         
         serializer = DashboardStatsSerializer(stats)
         return Response(serializer.data)
-
 
 class ExaminerViewSet(viewsets.ModelViewSet):
     """CRUD operations for examiners (users)"""
@@ -971,7 +967,7 @@ class DownloadStudentTemplateView(APIView):
 
 class BulkDeleteStudentsView(APIView):
     """Bulk delete students"""
-    permission_classes = [IsAuthenticated, IsAdminUser]
+    permission_classes = [IsAuthenticated]
     
     @transaction.atomic
     def post(self, request):
@@ -1014,7 +1010,6 @@ class BulkDeleteStudentsView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )   
-
 
 class StudentGradesView(APIView):
     """Get or export grades for all students"""
@@ -1059,9 +1054,6 @@ class StudentGradesView(APIView):
 
         if level and level != 'all':
             students = students.filter(level=level)
-
-        # if program_id and level and level != 'all':
-        #     students = students.filter(program_id=program_id, level=level)
 
         if search:
             students = students.filter(
@@ -1511,6 +1503,52 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         doc.build(elements)
         return response
 
+class BulkDeleteProceduresView(APIView):
+    """Bulk delete procedures"""
+    permission_classes = [IsAuthenticated]
+    
+    @transaction.atomic
+    def post(self, request):
+        procedure_ids = request.data.get('procedure_ids', [])
+        
+        if not procedure_ids:
+            return Response(
+                {'error': 'No procedure IDs provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not isinstance(procedure_ids, list):
+            return Response(
+                {'error': 'procedure_ids must be a list'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get procedures to delete
+            procedures = Procedure.objects.filter(id__in=procedure_ids)
+            count = procedures.count()
+            
+            if count == 0:
+                return Response(
+                    {'error': 'No procedures found with provided ID(s)'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Delete procedures
+            procedures.delete()
+            
+            return Response({
+                'success': True,
+                'deleted_count': count,
+                'message': f'Successfully deleted {count} procedure(s)'
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )  
+           
 class ImportProceduresView(APIView):
     """Import procedures and steps from Excel file (multi-sheet)"""
     permission_classes = [IsAuthenticated, IsAdminUser]
@@ -1589,37 +1627,46 @@ class ImportProceduresView(APIView):
                             errors.append(f"Procedure '{proc_name}': Invalid total score '{data['total_score']}'")
                             continue
                         
-                        # Get program
-                        try:
-                            program = Program.objects.get(name=data['program_name'])
-                        except Program.DoesNotExist:
-                            errors.append(f"Procedure '{proc_name}': Program '{data['program_name']}' not found")
-                            continue
-                        
-                        # Create or update procedure
-                        procedure, proc_created = Procedure.objects.update_or_create(
-                            name=proc_name,
-                            program=program,
-                            defaults={'total_score': total_score}
-                        )
-                        
-                        if proc_created:
-                            procedures_created += 1
+                        # Check if program is specified
+                        if not data['program_name']:
+                            # Shared procedure - create for ALL programs
+                            programs = Program.objects.all()
+                            if not programs.exists():
+                                errors.append(f"Procedure '{proc_name}': No programs found in database")
+                                continue
                         else:
-                            procedures_updated += 1
+                            # Specific program
+                            try:
+                                programs = [Program.objects.get(name=data['program_name'])]
+                            except Program.DoesNotExist:
+                                errors.append(f"Procedure '{proc_name}': Program '{data['program_name']}' not found")
+                                continue
                         
-                        # Create or update steps
-                        for step_data in data['steps']:
-                            step, step_created = ProcedureStep.objects.update_or_create(
-                                procedure=procedure,
-                                step_order=step_data['order'],
-                                defaults={'description': step_data['description']}
+                        # Create or update procedure for each program
+                        for program in programs:
+                            procedure, proc_created = Procedure.objects.update_or_create(
+                                name=proc_name,
+                                program=program,
+                                defaults={'total_score': total_score}
                             )
                             
-                            if step_created:
-                                steps_created += 1
+                            if proc_created:
+                                procedures_created += 1
                             else:
-                                steps_updated += 1
+                                procedures_updated += 1
+                            
+                            # Create or update steps
+                            for step_data in data['steps']:
+                                step, step_created = ProcedureStep.objects.update_or_create(
+                                    procedure=procedure,
+                                    step_order=step_data['order'],
+                                    defaults={'description': step_data['description']}
+                                )
+                                
+                                if step_created:
+                                    steps_created += 1
+                                else:
+                                    steps_updated += 1
                     
                     except Exception as e:
                         errors.append(f"Procedure '{proc_name}': {str(e)}")
@@ -1654,6 +1701,7 @@ class ImportProceduresView(APIView):
         errors = []
         
         # Store procedures for step import
+        # Key: (proc_name, program_name) -> Procedure object
         procedures_dict = {}
         
         try:
@@ -1677,31 +1725,43 @@ class ImportProceduresView(APIView):
                                 errors.append(f"Procedures Row {row_num}: Invalid total score '{row[2]}'")
                                 continue
                             
-                            if not proc_name or not program_name:
-                                errors.append(f"Procedures Row {row_num}: Missing procedure name or program")
+                            if not proc_name:
+                                errors.append(f"Procedures Row {row_num}: Missing procedure name")
                                 continue
                             
-                            # Get program
-                            try:
-                                program = Program.objects.get(name=program_name)
-                            except Program.DoesNotExist:
-                                errors.append(f"Procedures Row {row_num}: Program '{program_name}' not found")
-                                continue
-                            
-                            # Create or update procedure
-                            procedure, created = Procedure.objects.update_or_create(
-                                name=proc_name,
-                                program=program,
-                                defaults={'total_score': total_score}
-                            )
-                            
-                            # Store for step import
-                            procedures_dict[proc_name] = procedure
-                            
-                            if created:
-                                procedures_created += 1
+                            # Check if program is specified
+                            if not program_name:
+                                # Shared procedure - create for ALL programs
+                                programs = Program.objects.all()
+                                if not programs.exists():
+                                    errors.append(f"Procedures Row {row_num}: No programs found in database")
+                                    continue
                             else:
-                                procedures_updated += 1
+                                # Specific program
+                                try:
+                                    programs = [Program.objects.get(name=program_name)]
+                                except Program.DoesNotExist:
+                                    errors.append(f"Procedures Row {row_num}: Program '{program_name}' not found")
+                                    continue
+                            
+                            # Create or update procedure for each program
+                            for program in programs:
+                                procedure, created = Procedure.objects.update_or_create(
+                                    name=proc_name,
+                                    program=program,
+                                    defaults={'total_score': total_score}
+                                )
+                                
+                                # Store for step import - use (proc_name, program.name) as key
+                                procedures_dict[(proc_name, program.name)] = procedure
+                                # Also store with empty program name for shared procedures
+                                if not program_name:
+                                    procedures_dict[(proc_name, '')] = procedure
+                                
+                                if created:
+                                    procedures_created += 1
+                                else:
+                                    procedures_updated += 1
                         
                         except Exception as e:
                             errors.append(f"Procedures Row {row_num}: {str(e)}")
@@ -1732,28 +1792,44 @@ class ImportProceduresView(APIView):
                                 errors.append(f"Steps Row {row_num}: Missing procedure name or description")
                                 continue
                             
-                            # Get procedure from dict or database
-                            if proc_name in procedures_dict:
-                                procedure = procedures_dict[proc_name]
+                            # Find all matching procedures (could be multiple if shared across programs)
+                            matching_procedures = []
+                            
+                            # First, check if this is a shared procedure
+                            if (proc_name, '') in procedures_dict:
+                                # This is a shared procedure - get all instances
+                                for key, proc in procedures_dict.items():
+                                    if key[0] == proc_name:
+                                        matching_procedures.append(proc)
                             else:
+                                # Look for specific program procedures
+                                for key, proc in procedures_dict.items():
+                                    if key[0] == proc_name:
+                                        matching_procedures.append(proc)
+                            
+                            # If not found in dict, try database
+                            if not matching_procedures:
                                 try:
-                                    procedure = Procedure.objects.get(name=proc_name)
-                                    procedures_dict[proc_name] = procedure
+                                    matching_procedures = list(Procedure.objects.filter(name=proc_name))
                                 except Procedure.DoesNotExist:
-                                    errors.append(f"Steps Row {row_num}: Procedure '{proc_name}' not found")
-                                    continue
+                                    pass
                             
-                            # Create or update step
-                            step, created = ProcedureStep.objects.update_or_create(
-                                procedure=procedure,
-                                step_order=step_order,
-                                defaults={'description': description}
-                            )
+                            if not matching_procedures:
+                                errors.append(f"Steps Row {row_num}: Procedure '{proc_name}' not found")
+                                continue
                             
-                            if created:
-                                steps_created += 1
-                            else:
-                                steps_updated += 1
+                            # Create or update step for each matching procedure
+                            for procedure in matching_procedures:
+                                step, created = ProcedureStep.objects.update_or_create(
+                                    procedure=procedure,
+                                    step_order=step_order,
+                                    defaults={'description': description}
+                                )
+                                
+                                if created:
+                                    steps_created += 1
+                                else:
+                                    steps_updated += 1
                         
                         except Exception as e:
                             errors.append(f"Steps Row {row_num}: {str(e)}")
@@ -2000,7 +2076,6 @@ class ImportProcedureStepsView(APIView):
             'error_details': errors[:20],  # Limit to first 20 errors
         })
 
-
 class DownloadProcedureStepsTemplateView(APIView):
     """Download template for procedure steps import"""
     permission_classes = [IsAuthenticated, IsAdminUser]
@@ -2085,7 +2160,6 @@ class DownloadProcedureStepsTemplateView(APIView):
         wb.save(response)
         
         return response
-
 
 class ProgramViewSet(viewsets.ModelViewSet):
     """CRUD operations for programs"""

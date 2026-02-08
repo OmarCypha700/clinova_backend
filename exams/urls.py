@@ -22,6 +22,7 @@ from .views import (
     DownloadProcedureTemplateView,
     ImportProcedureStepsView,
     DownloadProcedureStepsTemplateView,
+    BulkDeleteProceduresView,
     BulkDeleteStudentsView,
     CarePlanView,
 )
@@ -66,6 +67,8 @@ urlpatterns = [
     # Procedure import/template
     path("procedures/import/", ImportProceduresView.as_view(), name='import-procedures'),
     path("procedures/template/", DownloadProcedureTemplateView.as_view(), name='procedure-template'),
+    path("procedures/bulk-delete/", BulkDeleteProceduresView.as_view(), name='bulk-delete-procedures'),
+
     
     # Procedure Steps Import/Export
     path("procedures/<int:procedure_id>/steps/import/", 
