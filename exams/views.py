@@ -22,13 +22,13 @@ from django.utils import timezone
 
 # For Excel export
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 
 # For PDF export
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from openpyxl import load_workbook
 
@@ -659,9 +659,7 @@ class StudentViewSet(viewsets.ModelViewSet):
         
         return response
     
-    def _export_excel(self, data):
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
+    def _export_excel(self, data):   
         
         wb = Workbook()
         ws = wb.active
@@ -706,12 +704,7 @@ class StudentViewSet(viewsets.ModelViewSet):
         
         return response
     
-    def _export_pdf(self, data):
-        from reportlab.lib.pagesizes import letter, landscape
-        from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-        from reportlab.lib.styles import getSampleStyleSheet
-        
+    def _export_pdf(self, data):       
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="students.pdf"'
         
@@ -799,14 +792,12 @@ class ImportStudentsView(APIView):
             return Response({'error': str(e)}, status=400)
     
     def _import_csv(self, file):
-        import csv
         decoded_file = file.read().decode('utf-8').splitlines()
         reader = csv.DictReader(decoded_file)
         
         return self._process_import(reader)
     
     def _import_excel(self, file):
-        from openpyxl import load_workbook
         wb = load_workbook(file)
         ws = wb.active
         
@@ -894,10 +885,7 @@ class DownloadStudentTemplateView(APIView):
     """Download a template Excel file for student import"""
     permission_classes = [IsAuthenticated, IsAdminUser]
     
-    def get(self, request):
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        
+    def get(self, request):        
         wb = Workbook()
         ws = wb.active
         ws.title = "Students Template"
@@ -1327,8 +1315,6 @@ class ProcedureViewSet(viewsets.ModelViewSet):
     
     def _export_excel(self, procedures):
         """Export procedures and steps in a multi-sheet Excel file"""
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
         
         wb = Workbook()
         
@@ -1443,10 +1429,7 @@ class ProcedureViewSet(viewsets.ModelViewSet):
     
     def _export_pdf(self, procedures):
         """Export procedures and steps as PDF"""
-        from reportlab.lib.pagesizes import letter, landscape
-        from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet
+        
         
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="procedures_and_steps.pdf"'
@@ -1569,9 +1552,6 @@ class ImportProceduresView(APIView):
     
     def _import_csv(self, file):
         """Import from CSV (combined format)"""
-        import csv
-        from django.db import transaction
-        
         try:
             decoded_file = file.read().decode('utf-8').splitlines()
         except UnicodeDecodeError:
@@ -1685,10 +1665,7 @@ class ImportProceduresView(APIView):
             return Response({'error': f'Import failed: {str(e)}'}, status=400)
     
     def _import_excel(self, file):
-        """Import from Excel (multi-sheet format)"""
-        from openpyxl import load_workbook
-        from django.db import transaction
-        
+        """Import from Excel (multi-sheet format)"""        
         try:
             wb = load_workbook(file, data_only=True)
         except Exception as e:
@@ -1699,9 +1676,7 @@ class ImportProceduresView(APIView):
         steps_created = 0
         steps_updated = 0
         errors = []
-        
-        # Store procedures for step import
-        # Key: (proc_name, program_name) -> Procedure object
+    
         procedures_dict = {}
         
         try:
@@ -1855,9 +1830,7 @@ class DownloadProcedureTemplateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminUser]
     
     def get(self, request):
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        
+       
         wb = Workbook()
         
         # Sheet 1: Procedures
@@ -1989,10 +1962,7 @@ class ImportProcedureStepsView(APIView):
         except Exception as e:
             return Response({'error': str(e)}, status=400)
     
-    def _import_csv(self, file, procedure):
-        import csv
-        from django.db import transaction
-        
+    def _import_csv(self, file, procedure):        
         try:
             decoded_file = file.read().decode('utf-8').splitlines()
         except UnicodeDecodeError:
@@ -2001,9 +1971,7 @@ class ImportProcedureStepsView(APIView):
         reader = csv.DictReader(decoded_file)
         return self._process_import(reader, procedure)
     
-    def _import_excel(self, file, procedure):
-        from openpyxl import load_workbook
-        
+    def _import_excel(self, file, procedure):        
         try:
             wb = load_workbook(file, data_only=True)
             ws = wb.active
@@ -2081,9 +2049,7 @@ class DownloadProcedureStepsTemplateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminUser]
     
     def get(self, request, procedure_id):
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        
+       
         # Verify procedure exists
         try:
             procedure = Procedure.objects.get(id=procedure_id)
