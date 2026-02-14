@@ -150,7 +150,7 @@ def import_examiners(request):
                     first_name=row['First Name'],
                     last_name=row['Last Name'],
                     role='examiner',
-                    is_active=row.get('Is Active', 'True').lower() in ['true', '1', 'yes'],
+                    # is_active=row.get('Is Active', 'True').lower() in ['true', '1', 'yes'],
                     password=make_password(row.get('Password', 'changeme123'))  # Default password if not provided
                 )
                 created_count += 1
