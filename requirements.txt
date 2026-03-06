@@ -5,10 +5,12 @@ diff-match-patch==20241021
 Django==4.2.16
 django-cors-headers==4.7.0
 django-import-export==4.3.14
+django-unfold==0.80.2
 djangorestframework==3.16.0
 djangorestframework_simplejwt==5.5.0
 et_xmlfile==2.0.0
 idna==3.10
+isort==8.0.0
 mysqlclient==2.2.7
 openpyxl==3.1.5
 pillow==12.1.0
