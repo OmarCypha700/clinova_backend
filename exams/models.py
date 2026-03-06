@@ -26,6 +26,9 @@ class Student(models.Model):
 
     class Meta:
         ordering = ["level", "index_number"]
+        indexes = [
+            models.Index(fields=["program", "level"]),
+        ]
 
     def __str__(self):
         return f"{self.index_number} - {self.full_name}"
@@ -107,6 +110,9 @@ class StudentProcedure(models.Model):
 
     class Meta:
         unique_together = ("student", "procedure")
+        indexes = [
+        models.Index(fields=["student", "status"]),
+    ]
 
     def __str__(self):
         return f"{self.student} - {self.procedure}"
@@ -200,6 +206,9 @@ class ProcedureStepScore(models.Model):
 
     class Meta:
         unique_together = ("student_procedure", "step", "examiner", "is_reconciled")
+        indexes = [
+        models.Index(fields=["step","student_procedure", "examiner"]),
+    ]
 
     def __str__(self):
         return f"{self.step} = {self.score}"
@@ -226,6 +235,9 @@ class ReconciledScore(models.Model):
     class Meta:
         unique_together = ("student_procedure", "step")
         ordering = ['step__step_order']
+        indexes = [
+            models.Index(fields=["student_procedure"]),
+        ]
     
     def __str__(self):
         return f"{self.student_procedure.student} - {self.step} = {self.score} (reconciled)"
