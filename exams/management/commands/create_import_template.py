@@ -1,6 +1,7 @@
+import os
+
 from django.core.management.base import BaseCommand
 from tablib import Dataset
-import os
 
 
 class Command(BaseCommand):

@@ -1,8 +1,10 @@
+import os
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from openpyxl import Workbook
-from exams.models import Program, Student, Procedure, ProcedureStep
-import os
+
+from exams.models import Procedure, ProcedureStep, Program, Student
 
 
 class Command(BaseCommand):

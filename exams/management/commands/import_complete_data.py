@@ -1,7 +1,8 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from openpyxl import load_workbook
-from exams.models import Program, Student, Procedure, ProcedureStep
+
+from exams.models import Procedure, ProcedureStep, Program, Student
 
 
 class Command(BaseCommand):

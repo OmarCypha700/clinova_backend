@@ -1,18 +1,20 @@
 from django.contrib import admin
-from import_export import resources, fields, widgets
-from import_export.admin import ImportExportModelAdmin, ExportActionMixin
+from import_export import fields, resources, widgets
+from import_export.admin import ExportActionMixin, ImportExportModelAdmin
+from unfold.admin import ModelAdmin
+from unfold.contrib.import_export.forms import ExportForm, ImportForm
+from unfold.paginator import InfinitePaginator
 # from accounts.models import User
-from .models import Program, Student, Procedure, ProcedureStep, StudentProcedure, ProcedureStepScore, ReconciledScore, CarePlan
-from import_export.admin import ImportExportModelAdmin
+from .models import (CarePlan, Procedure, ProcedureStep, ProcedureStepScore,
+                     Program, ReconciledScore, Student, StudentProcedure)
+
 
 # ============== RESOURCES ==============
-
 class ProgramResource(resources.ModelResource):
     class Meta:
         model = Program
         fields = ('id', 'name', 'abbreviation')
         export_order = ('id', 'name', 'abbreviation')
-
 
 class StudentResource(resources.ModelResource):
     program_name = fields.Field(
@@ -31,7 +33,6 @@ class StudentResource(resources.ModelResource):
         export_order = ('id', 'index_number', 'full_name', 'program_name', 'level', 'level_display', 'is_active')
         import_id_fields = ['index_number']
 
-
 class ProcedureResource(resources.ModelResource):
     program_name = fields.Field(
         column_name='program_name',
@@ -44,19 +45,6 @@ class ProcedureResource(resources.ModelResource):
         fields = ('id', 'program_name', 'name', 'total_score')
         export_order = ('id', 'program_name', 'name', 'total_score')
         import_id_fields = ['program_name', 'name']
-
-
-# class ProcedureStepResource(resources.ModelResource):
-#     procedure_name = fields.Field(
-#         column_name='procedure_name',
-#         attribute='procedure',
-#         widget=widgets.ForeignKeyWidget(Procedure, 'name')
-#     )
-    
-#     class Meta:
-#         model = ProcedureStep
-#         fields = ('id', 'procedure_name', 'description', 'step_order')
-#         export_order = ('id', 'procedure_name', 'description', 'step_order')
 
 class ProcedureStepResource(resources.ModelResource):
     procedure_name = fields.Field(column_name='procedure_name')
@@ -97,7 +85,6 @@ class ProcedureStepResource(resources.ModelResource):
     def dehydrate_program_name(self, step):
         return step.procedure.program.name
 
-
 class StudentProcedureResource(resources.ModelResource):
     student_index = fields.Field(
         column_name='student_index',
@@ -131,34 +118,26 @@ class StudentProcedureResource(resources.ModelResource):
             'status', 'assessed_at'
         )
 
-
 # ============== ADMIN CLASSES ==============
 
 @admin.register(Program)
-class ProgramAdmin(ImportExportModelAdmin):
-    resource_class = ProgramResource
+class ProgramAdmin(ModelAdmin, ImportExportModelAdmin):
+    import_form_class = ImportForm
+    export_form_class = ExportForm
     list_display = ('name', 'abbreviation')
     search_fields = ('name', 'abbreviation')
 
-    # Disable logging to avoid Django 5.x incompatibility
-    def log_addition(self, request, object, message):
-        pass
-    
-    def log_change(self, request, object, message):
-        pass
-    
-    def log_deletion(self, request, object, object_repr):
-        pass
-
-
 @admin.register(Student)
-class StudentAdmin(ImportExportModelAdmin):
+class StudentAdmin(ModelAdmin, ImportExportModelAdmin):
+    import_form_class = ImportForm
+    export_form_class = ExportForm
+    paginator = InfinitePaginator
+    show_full_result_count = False
     resource_class = StudentResource
     list_display = ('index_number', 'full_name', 'program', 'level', 'is_active')
     list_filter = ('program', 'level', 'is_active')
     search_fields = ('index_number', 'full_name')
     ordering = ('level', 'index_number')
-
 
 class ProcedureStepInline(admin.TabularInline):
     model = ProcedureStep
@@ -166,9 +145,10 @@ class ProcedureStepInline(admin.TabularInline):
     fields = ('step_order', 'description')
     ordering = ('step_order',)
 
-
 @admin.register(Procedure)
-class ProcedureAdmin(ImportExportModelAdmin):
+class ProcedureAdmin(ModelAdmin, ImportExportModelAdmin):
+    import_form_class = ImportForm
+    export_form_class = ExportForm
     resource_class = ProcedureResource
     list_display = ('name', 'program', 'total_score', 'get_steps_count')
     list_filter = ('program',)
@@ -179,19 +159,10 @@ class ProcedureAdmin(ImportExportModelAdmin):
         return obj.steps.count()
     get_steps_count.short_description = 'Steps Count'
 
-    # Disable logging to avoid Django 5.x incompatibility
-    def log_addition(self, request, object, message):
-        pass
-    
-    def log_change(self, request, object, message):
-        pass
-    
-    def log_deletion(self, request, object, object_repr):
-        pass
-
-
 @admin.register(ProcedureStep)
-class ProcedureStepAdmin(ImportExportModelAdmin):
+class ProcedureStepAdmin(ModelAdmin, ImportExportModelAdmin):
+    import_form_class = ImportForm
+    export_form_class = ExportForm
     resource_class = ProcedureStepResource
     list_display = ('procedure', 'step_order', 'description_preview')
     list_filter = ('procedure',)
@@ -201,33 +172,10 @@ class ProcedureStepAdmin(ImportExportModelAdmin):
         return obj.description[:50] + '...' if len(obj.description) > 50 else obj.description
     description_preview.short_description = 'Description'
 
-    # Disable logging to avoid Django 5.x incompatibility
-    def log_addition(self, request, object, message):
-        pass
-    
-    def log_change(self, request, object, message):
-        pass
-    
-    def log_deletion(self, request, object, object_repr):
-        pass
-
-
-# @admin.register(StudentProcedure)
-# class StudentProcedureAdmin(ImportExportModelAdmin, ExportActionMixin):
-#     resource_class = StudentProcedureResource
-#     list_display = (
-#         'student', 'procedure', 'examiner_a', 'examiner_b', 
-#         'status', 'assessed_at'
-#     )
-#     list_filter = ('status', 'procedure', 'assessed_at')
-#     search_fields = (
-#         'student__index_number', 'student__full_name',
-#         'procedure__name'
-#     )
-#     date_hierarchy = 'assessed_at'
-
 @admin.register(StudentProcedure)
-class StudentProcedureAdmin(ImportExportModelAdmin, ExportActionMixin):
+class StudentProcedureAdmin(ModelAdmin, ImportExportModelAdmin, ExportActionMixin):
+    import_form_class = ImportForm
+    export_form_class = ExportForm
     resource_class = StudentProcedureResource
     list_display = (
         'student', 'procedure', 'examiner_a', 'examiner_b', 
@@ -242,7 +190,7 @@ class StudentProcedureAdmin(ImportExportModelAdmin, ExportActionMixin):
     readonly_fields = ('assigned_reconciler',)
 
 @admin.register(ProcedureStepScore)
-class ProcedureStepScoreAdmin(admin.ModelAdmin):
+class ProcedureStepScoreAdmin(ModelAdmin):
     list_display = (
         'student_procedure', 'step', 'examiner', 'score', 'updated_at', 'is_reconciled'
     )
@@ -254,9 +202,8 @@ class ProcedureStepScoreAdmin(admin.ModelAdmin):
     )
     date_hierarchy = 'updated_at'
 
-
 @admin.register(ReconciledScore)
-class ReconciledScoreAdmin(admin.ModelAdmin):
+class ReconciledScoreAdmin(ModelAdmin):
     list_display = (
         'student_procedure', 'step', 'score', 
         'reconciled_by', 'reconciled_at'
@@ -269,10 +216,9 @@ class ReconciledScoreAdmin(admin.ModelAdmin):
     )
     date_hierarchy = 'reconciled_at'
 
-
 # Care Plan Admin
 @admin.register(CarePlan)
-class CarePlanAdmin(admin.ModelAdmin):
+class CarePlanAdmin(ModelAdmin):
     list_display = ('student', 'program', 'examiner', 'score', 'max_score', 'assessed_at', 'is_locked')
     list_filter = ('program', 'is_locked', 'assessed_at')
     search_fields = ('student__index_number', 'student__full_name', 'examiner__username')

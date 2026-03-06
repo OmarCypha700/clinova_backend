@@ -5,8 +5,7 @@ class IsExaminer(BasePermission):
         return (
             request.user.is_authenticated and 
             request.user.role == "examiner"
-        )
-    
+        )    
 
 class IsAdmin(BasePermission):
     def has_permission(self, request, view):

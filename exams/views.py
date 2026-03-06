@@ -1,37 +1,34 @@
-from rest_framework.generics import ListAPIView, RetrieveAPIView
-from .models import (Program, Student, Procedure, 
-                     ProcedureStepScore, StudentProcedure, ProcedureStep,
-                     ReconciledScore, CarePlan)
-from .serializers import (ProgramSerializer, StudentSerializer, ProcedureDetailSerializer, 
-                          ProcedureListSerializer, ReconciliationSerializer,
-                          DashboardStatsSerializer, UserSerializer, UserCreateSerializer,
-                          StudentCreateUpdateSerializer, ProcedureCreateUpdateSerializer,
-                          ProcedureStepCreateUpdateSerializer, ProcedureAdminListSerializer, CarePlanSerializer,
-                          CarePlanCreateSerializer,)
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status, viewsets, status
-from django.db import transaction
-from accounts.models import User
-from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
-from .permissions import IsExaminer, IsAdmin
-from django.db.models import Sum, Count, Q, Avg
-from django.http import HttpResponse
 import csv
+from django.db import transaction
+from django.db.models import Count, Q, Sum, Value
+from django.db.models.functions import Coalesce
+from django.http import HttpResponse
 from django.utils import timezone
-
 # For Excel export
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
-
-# For PDF export
-from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+# For PDF export
+from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import getSampleStyleSheet
-from openpyxl import load_workbook
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.generics import ListAPIView, RetrieveAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from accounts.models import User
+
+from .models import (CarePlan, Procedure, ProcedureStep, ProcedureStepScore,
+                     Program, ReconciledScore, Student, StudentProcedure)
+from .permissions import IsAdmin, IsExaminer
+from .serializers import (CarePlanCreateSerializer, CarePlanSerializer, DashboardStatsSerializer,
+                          ProcedureAdminListSerializer, ProcedureCreateUpdateSerializer, ProcedureDetailSerializer, 
+                          ProcedureListSerializer, ProcedureStepCreateUpdateSerializer, ProgramSerializer, 
+                          ReconciliationSerializer, StudentCreateUpdateSerializer, StudentSerializer,
+                          UserCreateSerializer, UserSerializer)
 
 
 class ProgramListView(ListAPIView):
@@ -456,47 +453,52 @@ class StudentViewSet(viewsets.ModelViewSet):
         return super().list(request, *args, **kwargs)
     
     def get_queryset(self):
-        queryset = super().get_queryset()
-        
-        # Filter by level if provided
+        queryset = Student.objects.select_related('program')
+
+        program_id = self.request.query_params.get('program_id')
         level = self.request.query_params.get('level')
+
+        if program_id and program_id != 'all':
+            queryset = queryset.filter(program_id=program_id)
+
         if level and level != 'all':
             queryset = queryset.filter(level=level)
-        
-        return queryset
+
+        return queryset   
     
     def _handle_export(self, request, export_format):
         """Handle export requests"""
-        program_id = request.query_params.get('program_id')
-        level = request.query_params.get('level')
-        
-        # Get students
-        students = Student.objects.select_related('program').filter(is_active=True)
-        
-        if program_id and program_id != 'all':
-            students = students.filter(program_id=program_id)
-        
-        if level and level != 'all':
-            students = students.filter(level=level)
-        
-        students_data = []
-        for student in students:
-            students_data.append({
-                'index_number': student.index_number,
-                'full_name': student.full_name,
-                'program_name': student.program.name,
-                'level': student.get_level_display(),
-                'is_active': 'Yes' if student.is_active else 'No',
-            })
-        
+        students = (
+            self.get_queryset()
+            .filter(is_active=True)
+            .values(
+                'index_number',
+                'full_name',
+                'program__name',
+                'level',
+                'is_active'
+            )
+        )
+
+        data = [
+            {
+                'index_number': s['index_number'],
+                'full_name': s['full_name'],
+                'program_name': s['program__name'],
+                'level': dict(Student.LEVEL_CHOICES).get(s['level'], s['level']),
+                'is_active': 'Yes' if s['is_active'] else 'No',
+            }
+            for s in students
+        ]
+
         if export_format == 'csv':
-            return self._export_csv(students_data)
+            return self._export_csv(data)
         elif export_format == 'excel':
-            return self._export_excel(students_data)
+            return self._export_excel(data)
         elif export_format == 'pdf':
-            return self._export_pdf(students_data)
-        else:
-            return Response({'error': 'Invalid format'}, status=400)
+            return self._export_pdf(data)
+
+        return Response({'error': 'Invalid format'}, status=400)
     
     def _export_csv(self, data):
         response = HttpResponse(content_type='text/csv')
@@ -888,10 +890,51 @@ class StudentGradesView(APIView):
 
     def _get_students(self, request):
         program_id = request.query_params.get('program_id')
-        level= request.query_params.get('level')
+        level = request.query_params.get('level')
         search = request.query_params.get('search', '')
 
-        students = Student.objects.select_related('program').filter(is_active=True)
+        students = (
+            Student.objects
+            .select_related('program')
+            .filter(is_active=True)
+            .annotate(
+                # Total reconciled procedure score
+                procedure_score=Coalesce(
+                    Sum(
+                        'studentprocedure__reconciled_scores__score',
+                        filter=Q(studentprocedure__status='reconciled')
+                    ),
+                    Value(0)
+                ),
+
+                # Total max procedure score
+                procedure_max_score=Coalesce(
+                    Sum(
+                        'studentprocedure__procedure__total_score',
+                        filter=Q(studentprocedure__status='reconciled')
+                    ),
+                    Value(0)
+                ),
+
+                # Count reconciled procedures
+                reconciled_count=Count(
+                    'studentprocedure',
+                    filter=Q(studentprocedure__status='reconciled'),
+                    distinct=True
+                ),
+
+                # Care plan score
+                care_plan_score=Coalesce(
+                    Sum('care_plans__score'),
+                    Value(0)
+                ),
+
+                care_plan_max_score=Coalesce(
+                    Sum('care_plans__max_score'),
+                    Value(0)
+                ),
+            )
+        )
 
         if program_id:
             students = students.filter(program_id=program_id)
@@ -906,49 +949,26 @@ class StudentGradesView(APIView):
             )
 
         return students
+    
 
     def _build_grades_data(self, students):
         grades_data = []
 
         for student in students:
-            reconciled_procedures = StudentProcedure.objects.filter(
-                student=student,
-                status='reconciled'
-            ).select_related('procedure').prefetch_related('reconciled_scores')
-
-            procedure_score = 0
-            procedure_max_score = 0
-
-            for sp in reconciled_procedures:
-                score = sp.reconciled_scores.aggregate(
-                    total=Sum('score')
-                )['total'] or 0
-
-                procedure_score += score
-                procedure_max_score += sp.procedure.total_score
-
-            try:
-                care_plan = CarePlan.objects.get(
-                    student=student,
-                    program=student.program
-                )
-                care_plan_score = care_plan.score
-                care_plan_max_score = care_plan.max_score
-            except CarePlan.DoesNotExist:
-                care_plan_score = 0
-                care_plan_max_score = 20
+            procedure_score = student.procedure_score or 0
+            procedure_max_score = student.procedure_max_score or 0
+            care_plan_score = student.care_plan_score or 0
+            care_plan_max_score = student.care_plan_max_score or 0
 
             total_score = procedure_score + care_plan_score
-            max_score = procedure_max_score + care_plan_max_score
+
+            max_score = (
+                procedure_max_score + care_plan_max_score
+                if care_plan_score > 0
+                else procedure_max_score
+            )
+
             percentage = (total_score / max_score * 100) if max_score > 0 else 0
-
-            def calculate_total_reconciled_procedures():
-                if student.program.name == "Registered Midwifery":
-                    return 5
-                else:
-                    return 4
-
-            total_reconciled_procedures = calculate_total_reconciled_procedures()
 
             grades_data.append({
                 'student_id': student.id,
@@ -965,13 +985,11 @@ class StudentGradesView(APIView):
                 'max_score': max_score,
                 'percentage': round(percentage, 1),
                 'grade': self._calculate_grade(percentage),
-                'reconciled_count': reconciled_procedures.count(),
-                'progress': f"{reconciled_procedures.count()}/{total_reconciled_procedures}",
+                'reconciled_count': student.reconciled_count,
                 'care_plan_completed': care_plan_score > 0,
             })
 
         return grades_data
-
     # ------------------------------------------------------------------
     # Grade logic
     # ------------------------------------------------------------------
@@ -983,6 +1001,8 @@ class StudentGradesView(APIView):
             return 'Credit'
         elif percentage >= 60:
             return 'Pass'
+        elif percentage == 0:
+            return 'N/A'
         return 'Fail'
 
     # ------------------------------------------------------------------
@@ -1124,7 +1144,6 @@ class StudentGradesView(APIView):
         doc.build(elements)
 
         return response
-
 
 # =====================PROCEDURE IMPORT VIEWS============================
 class ProcedureViewSet(viewsets.ModelViewSet):
@@ -2033,4 +2052,3 @@ class CarePlanView(APIView):
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-

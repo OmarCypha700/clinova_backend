@@ -11,7 +11,9 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 import os
 from datetime import timedelta
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from pathlib import Path
@@ -27,7 +29,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 # Allowed hosts
 FRONTEND_URL = os.getenv("FRONTEND_URL")
@@ -42,6 +44,9 @@ ALLOWED_HOSTS = [BACKEND_DEV_URL,BACKEND_URL,LOCALHOST, ]
 # Application definition
 
 INSTALLED_APPS = [
+    'unfold',
+    'unfold.contrib.filters',
+    'unfold.contrib.import_export',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -141,7 +146,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = 'staticfiles/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
@@ -166,8 +171,6 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
-    # "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    # "PAGE_SIZE": 20,
 }
 
 # Simple JWT Settings
@@ -193,10 +196,16 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
 
-# ------------------------------
-# CORS SETTINGS (if frontend separate)
-# ------------------------------
 CORS_ALLOWED_ORIGINS = [FRONTEND_DEV_URL,FRONTEND_URL, ]
 
 CORS_ALLOW_CREDENTIALS = True
 
+UNFOLD = {
+    "SITE_TITLE": "ClinOva Clinical Skills Assessment App",
+    "SITE_HEADER": "ClinOva-CNMT",
+
+    "SIDEBAR": {
+        "locked": True,
+        "visible": True, 
+    }
+}

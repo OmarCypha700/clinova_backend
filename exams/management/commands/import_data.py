@@ -1,10 +1,10 @@
+import os
+
 from django.core.management.base import BaseCommand, CommandError
 from tablib import Dataset
-from exams.admin import (
-    StudentResource, ProgramResource,
-    ProcedureResource, ProcedureStepResource
-)
-import os
+
+from exams.admin import (ProcedureResource, ProcedureStepResource,
+                         ProgramResource, StudentResource)
 
 
 class Command(BaseCommand):

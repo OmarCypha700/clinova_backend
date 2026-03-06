@@ -1,8 +1,7 @@
-from rest_framework import serializers
-from .models import (Program, Student, Procedure, 
-                     ProcedureStep, ProcedureStepScore, StudentProcedure, 
-                     ReconciledScore, CarePlan)
 from django.contrib.auth import get_user_model
+from rest_framework import serializers
+from .models import (CarePlan, Procedure, ProcedureStep, ProcedureStepScore,
+                     Program, ReconciledScore, Student, StudentProcedure)
 
 User = get_user_model()
 

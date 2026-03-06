@@ -1,31 +1,17 @@
-from django.urls import path, include
+from django.urls import include, path
 from rest_framework.routers import DefaultRouter
-from .views import (
-    ProgramListView,
-    StudentByProgramView,
-    ProcedureByProgramView,
-    ProcedureDetailView,
-    AutosaveStepScoreView,
-    ReconciliationView,
-    SaveReconciliationView,
-    StudentDetailView,
-    DashboardStatsView,
-    ExaminerViewSet,
-    StudentViewSet,
-    ProcedureViewSet,
-    ProcedureStepViewSet,
-    StudentGradesView,
-    ProgramViewSet,
-    ImportStudentsView,
-    DownloadStudentTemplateView,
-    ImportProceduresView,
-    DownloadProcedureTemplateView,
-    ImportProcedureStepsView,
-    DownloadProcedureStepsTemplateView,
-    BulkDeleteProceduresView,
-    BulkDeleteStudentsView,
-    CarePlanView,
-)
+
+from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
+                    BulkDeleteStudentsView, CarePlanView, DashboardStatsView,
+                    DownloadProcedureStepsTemplateView,
+                    DownloadProcedureTemplateView, DownloadStudentTemplateView,
+                    ExaminerViewSet, ImportProcedureStepsView,
+                    ImportProceduresView, ImportStudentsView,
+                    ProcedureByProgramView, ProcedureDetailView,
+                    ProcedureStepViewSet, ProcedureViewSet, ProgramListView,
+                    ProgramViewSet, ReconciliationView, SaveReconciliationView,
+                    StudentByProgramView, StudentDetailView, StudentGradesView,
+                    StudentViewSet)
 
 # Router for viewsets
 router = DefaultRouter()
