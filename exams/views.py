@@ -1,6 +1,6 @@
 import csv
 from django.db import transaction
-from django.db.models import Count, Q, Sum, Value
+from django.db.models import Count, Q, Sum, Value, OuterRef, Subquery
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
@@ -893,44 +893,84 @@ class StudentGradesView(APIView):
         level = request.query_params.get('level')
         search = request.query_params.get('search', '')
 
+        procedure_score_subquery = (
+            StudentProcedure.objects
+            .filter(student=OuterRef('pk'), status='reconciled')
+            .values('student')
+            .annotate(
+                total=Sum('reconciled_scores__score')
+            )
+            .values('total')[:1]
+        )
+
+        procedure_max_subquery = (
+            StudentProcedure.objects
+            .filter(student=OuterRef('pk'), status='reconciled')
+            .values('student')
+            .annotate(
+                total=Sum('procedure__total_score')
+            )
+            .values('total')[:1]
+        )
+
+        procedure_count_subquery = (
+            StudentProcedure.objects
+            .filter(student=OuterRef('pk'), status='reconciled')
+            .values('student')
+            .annotate(
+                total=Count('id')
+            )
+            .values('total')[:1]
+        )
+
+        care_plan_score_subquery = (
+            CarePlan.objects
+            .filter(student=OuterRef('pk'))
+            .values('student')
+            .annotate(
+                total=Sum('score')
+            )
+            .values('total')[:1]
+        )
+
+        care_plan_max_subquery = (
+            CarePlan.objects
+            .filter(student=OuterRef('pk'))
+            .values('student')
+            .annotate(
+                total=Sum('max_score')
+            )
+            .values('total')[:1]
+        )
+
         students = (
             Student.objects
             .select_related('program')
             .filter(is_active=True)
             .annotate(
-                # Total reconciled procedure score
+
                 procedure_score=Coalesce(
-                    Sum(
-                        'studentprocedure__reconciled_scores__score',
-                        filter=Q(studentprocedure__status='reconciled')
-                    ),
+                    Subquery(procedure_score_subquery),
                     Value(0)
                 ),
 
-                # Total max procedure score
                 procedure_max_score=Coalesce(
-                    Sum(
-                        'studentprocedure__procedure__total_score',
-                        filter=Q(studentprocedure__status='reconciled')
-                    ),
+                    Subquery(procedure_max_subquery),
                     Value(0)
                 ),
 
-                # Count reconciled procedures
-                reconciled_count=Count(
-                    'studentprocedure',
-                    filter=Q(studentprocedure__status='reconciled'),
-                    distinct=True
+                reconciled_count=Coalesce(
+                    Subquery(procedure_count_subquery),
+                    Value(0)
                 ),
 
-                # Care plan score
                 care_plan_score=Coalesce(
-                    Sum('care_plans__score'),
+                    Subquery(care_plan_score_subquery),
                     Value(0)
                 ),
 
                 care_plan_max_score=Coalesce(
-                    Sum('care_plans__max_score'),
+                    Subquery(care_plan_max_subquery),
                     Value(0)
                 ),
             )
@@ -962,11 +1002,16 @@ class StudentGradesView(APIView):
 
             total_score = procedure_score + care_plan_score
 
-            max_score = (
-                procedure_max_score + care_plan_max_score
-                if care_plan_score > 0
-                else procedure_max_score
-            )
+            if care_plan_score > 0:
+                max_score = procedure_max_score + care_plan_max_score
+            else:
+                max_score = procedure_max_score
+
+            # max_score = (
+            #     procedure_max_score + care_plan_max_score
+            #     if care_plan_score > 0
+            #     else procedure_max_score
+            # )
 
             percentage = (total_score / max_score * 100) if max_score > 0 else 0
 
