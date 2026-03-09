@@ -10,9 +10,10 @@ from openpyxl.styles import Font, PatternFill
 from reportlab.lib import colors
 # For PDF export
 from reportlab.lib.pagesizes import landscape, letter
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from rest_framework import status, viewsets
+from reportlab.lib.enums import TA_CENTER
+from rest_framework import request, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
@@ -864,6 +865,9 @@ class StudentGradesView(APIView):
     def get(self, request):
         export_format = request.query_params.get('export')
 
+        program_id = request.query_params.get('program_id')
+        level = request.query_params.get('level')
+
         students = self._get_students(request)
         grades_data = self._build_grades_data(students)
 
@@ -873,7 +877,7 @@ class StudentGradesView(APIView):
             elif export_format == 'excel':
                 return self._export_excel(grades_data)
             elif export_format == 'pdf':
-                return self._export_pdf(grades_data)
+                return self._export_pdf(grades_data, program_id, level)
             return Response({'error': 'Invalid export format'}, status=400)
 
         # Sorting
@@ -1136,15 +1140,45 @@ class StudentGradesView(APIView):
 
         return response
 
-    def _export_pdf(self, data):
+    def _export_pdf(self, data, program_id=None, level=None):
         response = HttpResponse(content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="student_grades.pdf"'
 
         doc = SimpleDocTemplate(response, pagesize=landscape(letter))
         styles = getSampleStyleSheet()
-        elements = []
+        title_style = ParagraphStyle(
+            'CenteredTitle',
+            parent=styles['Title'],
+            alignment=TA_CENTER
+        )
 
-        elements.append(Paragraph("Student Grades Report", styles['Title']))
+        program_style = ParagraphStyle(
+            'CenteredProgram',
+            parent=styles['Heading2'],
+            alignment=TA_CENTER,
+            spaceBefore=6
+        )
+
+        level_style = ParagraphStyle(
+            'CenteredLevel',
+            parent=styles['Heading3'],
+            alignment=TA_CENTER,
+            spaceBefore=4,
+            spaceAfter=14
+        )
+        elements = []
+        # Main Title
+        elements.append(Paragraph("STUDENT GRADES REPORT", styles['Title']))
+        # Program Subtitle
+        if program_id:
+            program_name = Program.objects.filter(id=program_id).values_list("name", flat=True).first()
+            if program_name:
+                elements.append(Paragraph(program_name, program_style))
+
+        # Level Subtitle
+        if level and level != "all":
+            elements.append(Paragraph(f"Level {level}", level_style))
+
         elements.append(Paragraph("<br/><br/>", styles['Normal']))
 
         table_data = [[
