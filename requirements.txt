@@ -1,9 +1,10 @@
-asgiref==3.8.1
+asgiref==3.11.1
 certifi==2025.4.26
 charset-normalizer==3.4.2
 diff-match-patch==20241021
-Django==4.2.16
+Django==6.0.3
 django-cors-headers==4.7.0
+django-filter==25.2
 django-import-export==4.3.14
 django-unfold==0.80.2
 djangorestframework==3.16.0
