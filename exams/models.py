@@ -10,28 +10,31 @@ class Program(models.Model):
     def __str__(self):
         return self.name
 
+class Level(models.Model):
+    number = models.PositiveSmallIntegerField(unique=True, blank=True, null=True)
+    name = models.CharField(max_length=50, unique=True)
+
+    class Meta:
+        ordering = ["number"]
+
+    def __str__(self):
+        return self.name
+
 class Student(models.Model):
-    LEVEL_CHOICES = [
-        ('100', 'Level 100'),
-        ('200', 'Level 200'),
-        ('300', 'Level 300'),
-        ('400', 'Level 400'),
-    ]
-    
     index_number = models.CharField(max_length=50, unique=True, db_index=True)
     full_name = models.CharField(max_length=255, db_index=True)
     program = models.ForeignKey(Program, on_delete=models.PROTECT, db_index=True)
-    level = models.CharField(max_length=3, choices=LEVEL_CHOICES, default='100', db_index=True)
+    level = models.ForeignKey(Level,   on_delete=models.PROTECT, related_name="students", db_index=True)
     is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta:
         ordering = ["level", "index_number"]
         indexes = [
-            models.Index(fields=["program", "level"]),
+            models.Index(fields=["program", "level", "is_active"]),
         ]
 
     def __str__(self):
-        return f"{self.index_number} - {self.full_name}"
+        return f"{self.index_number} - {self.full_name} ({self.level})"
 
 class Procedure(models.Model):
     program = models.ForeignKey(Program, on_delete=models.CASCADE)

@@ -6,8 +6,8 @@ from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
                     DownloadProcedureStepsTemplateView,
                     DownloadProcedureTemplateView, DownloadStudentTemplateView,
                     ExaminerViewSet, ImportProcedureStepsView,
-                    ImportProceduresView, ImportStudentsView,
-                    ProcedureByProgramView, ProcedureDetailView,
+                    ImportProceduresView, ImportStudentsView, LevelListCreateView, 
+                    LevelDetailView, ProcedureByProgramView, ProcedureDetailView,
                     ProcedureStepViewSet, ProcedureViewSet, ProgramListView,
                     ProgramViewSet, ReconciliationView, SaveReconciliationView,
                     StudentByProgramView, StudentDetailView, StudentGradesView,
@@ -29,6 +29,10 @@ urlpatterns = [
     path("students/<int:pk>/", StudentDetailView.as_view()),
     path("students/<int:student_id>/procedures/<int:pk>/", ProcedureDetailView.as_view()),
     path("autosave-step-score/", AutosaveStepScoreView.as_view()),
+
+#     Level endpoints
+    path("levels/", LevelListCreateView.as_view(), name='level-list-create'),
+    path("levels/<int:pk>/", LevelDetailView.as_view(), name='level-detail'),
 
     # Student import/export
     path("students/import/", ImportStudentsView.as_view(), name='import-students'),
