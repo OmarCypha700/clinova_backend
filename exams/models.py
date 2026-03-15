@@ -265,3 +265,61 @@ class CarePlan(models.Model):
     
     def get_percentage(self):
         return (self.score / self.max_score * 100) if self.max_score > 0 else 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SITE SETTINGS  (singleton — always pk=1)
+# Add this class at the bottom of your existing models.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SiteSettings(models.Model):
+    """
+    Application-wide feature flags and configuration.
+    Only one row ever exists (pk=1). Use SiteSettings.get() everywhere.
+    """
+
+    # ── Care Plan ─────────────────────────────────────────────────────────────
+    care_plan_lock_on_submit = models.BooleanField(
+        default=True,
+        verbose_name="Lock care plan after submission",
+        help_text=(
+            "When ON (default): a care plan is locked immediately after an "
+            "examiner submits it and cannot be changed. "
+            "When OFF: any examiner can overwrite a previously submitted care "
+            "plan score."
+        ),
+    )
+
+    # ── Placeholder for future flags ──────────────────────────────────────────
+    # allow_examiner_reassignment = models.BooleanField(default=False, ...)
+    # reconciliation_required     = models.BooleanField(default=True,  ...)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="settings_updates",
+    )
+
+    class Meta:
+        verbose_name = "Site Settings"
+        verbose_name_plural = "Site Settings"
+
+    def __str__(self):
+        return "Site Settings"
+
+    # Enforce singleton: always save to pk=1
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pass  # settings row must not be deleted
+
+    @classmethod
+    def get(cls):
+        """Return the single settings instance, creating it with defaults if needed."""
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj

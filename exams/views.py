@@ -28,7 +28,7 @@ from accounts.models import User
 from .filters import StudentFilter
 from .models import (
     CarePlan, Level, Procedure, ProcedureStep, ProcedureStepScore,
-    Program, ReconciledScore, Student, StudentProcedure
+    Program, ReconciledScore, SiteSettings, Student, StudentProcedure
 )
 from .permissions import IsAdmin, IsExaminer
 from .serializers import (
@@ -37,8 +37,34 @@ from .serializers import (
     ProcedureDetailSerializer, ProcedureListSerializer,
     ProcedureStepCreateUpdateSerializer, ProgramSerializer,
     ReconciliationSerializer, StudentCreateUpdateSerializer, StudentSerializer,
-    UserCreateSerializer, UserSerializer,
+    SiteSettingsSerializer, UserCreateSerializer, UserSerializer, 
 )
+
+# ─────────────────────────────────────────────
+# SITESETTINGS VIEW
+# ─────────────────────────────────────────────
+
+class SiteSettingsView(APIView):
+    """
+    GET  /exams/settings/   – retrieve current settings
+    PATCH /exams/settings/  – update one or more flags (admin only)
+    """
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
+ 
+    def get(self, request):
+        settings = SiteSettings.get()
+        return Response(SiteSettingsSerializer(settings).data)
+ 
+    def patch(self, request):
+        settings = SiteSettings.get()
+        serializer = SiteSettingsSerializer(settings, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ─────────────────────────────────────────────
@@ -1458,30 +1484,114 @@ class StudentGradesView(APIView):
 # ─────────────────────────────────────────────
 
 class CarePlanView(APIView):
+    """
+    GET  – return existing care plan or {exists: False}
+    POST – submit (or rescore, depending on the care_plan_lock_on_submit flag)
+    """
     permission_classes = [IsAuthenticated]
-
+ 
     def get(self, request, student_id, program_id):
         try:
-            care_plan = CarePlan.objects.select_related("student", "examiner").get(
-                student_id=student_id, program_id=program_id
+            care_plan = CarePlan.objects.select_related("examiner").get(
+                student_id=student_id,
+                program_id=program_id,
             )
             return Response(CarePlanSerializer(care_plan).data)
         except CarePlan.DoesNotExist:
-            return Response({"exists": False, "message": "No care plan found"}, status=200)
-
+            return Response(
+                {"exists": False, "message": "No care plan found for this student"},
+                status=status.HTTP_200_OK,
+            )
+ 
     @transaction.atomic
     def post(self, request, student_id, program_id):
-        if CarePlan.objects.filter(student_id=student_id, program_id=program_id).exists():
-            return Response(
-                {"error": "Care plan already submitted for this student"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        data = {**request.data, "student": student_id, "program": program_id}
+        site_settings = SiteSettings.get()
+        lock_on_submit = site_settings.care_plan_lock_on_submit
+ 
+        existing = CarePlan.objects.filter(
+            student_id=student_id,
+            program_id=program_id,
+        ).first()
+ 
+        if existing:
+            if lock_on_submit:
+                # Flag is ON (default) – prevent rescoring
+                return Response(
+                    {"error": "Care plan already submitted for this student"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            else:
+                # Flag is OFF – allow rescoring: update in-place
+                score = request.data.get("score")
+                comments = request.data.get("comments", existing.comments)
+ 
+                if score is None:
+                    return Response(
+                        {"error": "score is required"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+ 
+                score_int = int(score)
+                if not (0 <= score_int <= 20):
+                    return Response(
+                        {"error": "Score must be between 0 and 20"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+ 
+                existing.score    = score_int
+                existing.comments = comments
+                existing.examiner = request.user   # track who rescored
+                existing.is_locked = False          # stays unlocked
+                existing.save(update_fields=["score", "comments", "examiner", "is_locked"])
+                return Response(CarePlanSerializer(existing).data, status=status.HTTP_200_OK)
+ 
+        # No existing care plan — create it
+        data = request.data.copy()
+        data["student"] = student_id
+        data["program"] = program_id
+ 
         serializer = CarePlanCreateSerializer(data=data)
         if serializer.is_valid():
-            care_plan = serializer.save(examiner=request.user, is_locked=True)
-            return Response(CarePlanSerializer(care_plan).data, status=201)
-        return Response(serializer.errors, status=400)
+            care_plan = serializer.save(
+                examiner=request.user,
+                is_locked=lock_on_submit,   # lock only when flag is ON
+            )
+            return Response(
+                CarePlanSerializer(care_plan).data,
+                status=status.HTTP_201_CREATED,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# Note: The original version of CarePlanView (below) was a simple create-once endpoint that locked the care plan after submission.
+# The new version (above) adds support for optional rescoring based on a site setting, allowing updates to the care plan score and comments if the lock_on_submit flag is turned off. 
+# The original version is kept here for reference and potential rollback if needed.
+
+# class CarePlanView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, student_id, program_id):
+#         try:
+#             care_plan = CarePlan.objects.select_related("student", "examiner").get(
+#                 student_id=student_id, program_id=program_id
+#             )
+#             return Response(CarePlanSerializer(care_plan).data)
+#         except CarePlan.DoesNotExist:
+#             return Response({"exists": False, "message": "No care plan found"}, status=200)
+
+#     @transaction.atomic
+#     def post(self, request, student_id, program_id):
+#         if CarePlan.objects.filter(student_id=student_id, program_id=program_id).exists():
+#             return Response(
+#                 {"error": "Care plan already submitted for this student"},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+#         data = {**request.data, "student": student_id, "program": program_id}
+#         serializer = CarePlanCreateSerializer(data=data)
+#         if serializer.is_valid():
+#             care_plan = serializer.save(examiner=request.user, is_locked=True)
+#             return Response(CarePlanSerializer(care_plan).data, status=201)
+#         return Response(serializer.errors, status=400)
 
 
 # ─────────────────────────────────────────────

@@ -11,7 +11,7 @@ from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
                     ProcedureStepViewSet, ProcedureViewSet, ProgramListView,
                     ProgramViewSet, ReconciliationView, SaveReconciliationView,
                     StudentByProgramView, StudentDetailView, StudentGradesView,
-                    StudentViewSet)
+                    StudentViewSet, SiteSettingsView)
 
 # Router for viewsets
 router = DefaultRouter()
@@ -22,6 +22,9 @@ router.register(r'admin/procedures', ProcedureViewSet, basename='admin-procedure
 router.register(r'admin/procedure-steps', ProcedureStepViewSet, basename='admin-procedure-step')
 
 urlpatterns = [
+    # Site settings
+    path("settings/", SiteSettingsView.as_view(), name="site-settings"),
+
     # Standard endpoints (BEFORE router)
     path("programs/", ProgramListView.as_view()),
     path("programs/<int:program_id>/students/", StudentByProgramView.as_view()),
@@ -30,7 +33,7 @@ urlpatterns = [
     path("students/<int:student_id>/procedures/<int:pk>/", ProcedureDetailView.as_view()),
     path("autosave-step-score/", AutosaveStepScoreView.as_view()),
 
-#     Level endpoints
+    #Level endpoints
     path("levels/", LevelListCreateView.as_view(), name='level-list-create'),
     path("levels/<int:pk>/", LevelDetailView.as_view(), name='level-detail'),
 
