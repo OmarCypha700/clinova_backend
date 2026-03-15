@@ -239,15 +239,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY
 # ─────────────────────────────────────────────
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
-DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+DEBUG = os.getenv("DEBUG")
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "")
-FRONTEND_DEV_URL = os.getenv("FRONTEND_DEV_URL", "")
-BACKEND_URL = os.getenv("BACKEND_URL", "")
-BACKEND_DEV_URL = os.getenv("BACKEND_DEV_URL", "")
-LOCALHOST = os.getenv("LOCALHOST", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+FRONTEND_DEV_URL = os.getenv("FRONTEND_DEV_URL")
+BACKEND_URL = os.getenv("BACKEND_URL")
+BACKEND_DEV_URL = os.getenv("BACKEND_DEV_URL")
+LOCALHOST = os.getenv("LOCALHOST")
 
-ALLOWED_HOSTS = [BACKEND_DEV_URL, BACKEND_URL, LOCALHOST]
+ALLOWED_HOSTS = [BACKEND_DEV_URL, BACKEND_URL, LOCALHOST,]
 
 # ─────────────────────────────────────────────
 # APPLICATION
@@ -311,33 +311,15 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     },
     # "default": {
-    #     "ENGINE": os.getenv("DB_ENGINE", "django.db.backends.sqlite3"),
-    #     "NAME": os.getenv("DB_NAME", str(BASE_DIR / "db.sqlite3")),
-    #     "USER": os.getenv("DB_USER", ""),
-    #     "PASSWORD": os.getenv("DB_PASSWORD", ""),
-    #     "HOST": os.getenv("DB_HOST", ""),
-    #     "PORT": os.getenv("DB_PORT", ""),
-    #     # Keep DB connections alive across requests (production optimization)
+    #     "ENGINE": os.getenv("DB_ENGINE"),
+    #     "NAME": os.getenv("DB_NAME"),
+    #     "USER": os.getenv("DB_USER"),
+    #     "PASSWORD": os.getenv("DB_PASSWORD"),
+    #     "HOST": os.getenv("DB_HOST"),
+    #     "PORT": os.getenv("DB_PORT"),
     #     "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
-    #     "OPTIONS": {
-    #         # PostgreSQL: enable server-side cursors for large result sets
-    #         # "cursor_factory": None,  # uncomment when switching to Postgres
-    #     },
     # }
 }
-
-# ─────────────────────────────────────────────
-# CACHING  (swap "LocMemCache" for Redis in production)
-# ─────────────────────────────────────────────
-# CACHES = {
-#     "default": {
-#         "BACKEND": os.getenv(
-#             "CACHE_BACKEND",
-#             "django.core.cache.backends.locmem.LocMemCache",
-#         ),
-#         "LOCATION": os.getenv("CACHE_LOCATION", "unique-clinova"),
-#     }
-# }
 
 # ─────────────────────────────────────────────
 # PASSWORD VALIDATION
@@ -407,10 +389,12 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": False,
     "UPDATE_LAST_LOGIN": True,
+
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
     "AUTH_HEADER_TYPES": ("Bearer",),
     "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
+
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
     "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
@@ -420,7 +404,7 @@ SIMPLE_JWT = {
 # ─────────────────────────────────────────────
 # CORS
 # ─────────────────────────────────────────────
-CORS_ALLOWED_ORIGINS = [FRONTEND_DEV_URL, FRONTEND_URL]
+CORS_ALLOWED_ORIGINS = [FRONTEND_DEV_URL, FRONTEND_URL,]
 CORS_ALLOW_CREDENTIALS = True
 
 # ─────────────────────────────────────────────
@@ -438,30 +422,30 @@ UNFOLD = {
 # ─────────────────────────────────────────────
 # LOGGING  (structured, production-friendly)
 # ─────────────────────────────────────────────
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "verbose": {
-            "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
-            "style": "{",
-        },
-    },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "verbose",
-        },
-    },
-    "root": {
-        "handlers": ["console"],
-        "level": os.getenv("LOG_LEVEL", "WARNING"),
-    },
-    "loggers": {
-        "django.db.backends": {
-            "handlers": ["console"],
-            "level": "DEBUG" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-    },
-}
+# LOGGING = {
+#     "version": 1,
+#     "disable_existing_loggers": False,
+#     "formatters": {
+#         "verbose": {
+#             "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
+#             "style": "{",
+#         },
+#     },
+#     "handlers": {
+#         "console": {
+#             "class": "logging.StreamHandler",
+#             "formatter": "verbose",
+#         },
+#     },
+#     "root": {
+#         "handlers": ["console"],
+#         "level": os.getenv("LOG_LEVEL", "WARNING"),
+#     },
+#     "loggers": {
+#         "django.db.backends": {
+#             "handlers": ["console"],
+#             "level": "DEBUG" if DEBUG else "WARNING",
+#             "propagate": False,
+#         },
+#     },
+# }
