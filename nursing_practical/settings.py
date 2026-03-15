@@ -247,7 +247,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "")
 BACKEND_DEV_URL = os.getenv("BACKEND_DEV_URL", "")
 LOCALHOST = os.getenv("LOCALHOST", "")
 
-ALLOWED_HOSTS = [h for h in [BACKEND_DEV_URL, BACKEND_URL, LOCALHOST] if h]
+ALLOWED_HOSTS = [BACKEND_DEV_URL, BACKEND_URL, LOCALHOST]
 
 # ─────────────────────────────────────────────
 # APPLICATION
@@ -329,15 +329,15 @@ DATABASES = {
 # ─────────────────────────────────────────────
 # CACHING  (swap "LocMemCache" for Redis in production)
 # ─────────────────────────────────────────────
-CACHES = {
-    "default": {
-        "BACKEND": os.getenv(
-            "CACHE_BACKEND",
-            "django.core.cache.backends.locmem.LocMemCache",
-        ),
-        "LOCATION": os.getenv("CACHE_LOCATION", "unique-clinova"),
-    }
-}
+# CACHES = {
+#     "default": {
+#         "BACKEND": os.getenv(
+#             "CACHE_BACKEND",
+#             "django.core.cache.backends.locmem.LocMemCache",
+#         ),
+#         "LOCATION": os.getenv("CACHE_LOCATION", "unique-clinova"),
+#     }
+# }
 
 # ─────────────────────────────────────────────
 # PASSWORD VALIDATION
@@ -420,7 +420,7 @@ SIMPLE_JWT = {
 # ─────────────────────────────────────────────
 # CORS
 # ─────────────────────────────────────────────
-CORS_ALLOWED_ORIGINS = [o for o in [FRONTEND_DEV_URL, FRONTEND_URL] if o]
+CORS_ALLOWED_ORIGINS = [FRONTEND_DEV_URL, FRONTEND_URL]
 CORS_ALLOW_CREDENTIALS = True
 
 # ─────────────────────────────────────────────
