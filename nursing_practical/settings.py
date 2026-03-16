@@ -189,11 +189,7 @@ CORS_ALLOW_CREDENTIALS = True
 # ─────────────────────────────────────────────
 UNFOLD = {
     "SITE_TITLE": "ClinOva Clinical Practical Assessment App",
-    "SITE_HEADER": "ClinOva-UENR",
-    "SIDEBAR": {
-        "locked": True,
-        "visible": True,
-    },
+    "SITE_HEADER": "ClinOva-CNMT",
 }
 
 # ─────────────────────────────────────────────
