@@ -771,8 +771,16 @@ class BulkDeleteStudentsView(APIView):
 # ADMIN: PROCEDURES
 # ─────────────────────────────────────────────
 
+class ProcedurePagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 5000
+
 class ProcedureViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin]
+    pagination_class = ProcedurePagination
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter,]
+    search_fields = ["name"]
 
     def get_queryset(self):
         qs = (
