@@ -1,4 +1,5 @@
 import django_filters
+
 from .models import Student
 
 
@@ -14,8 +15,6 @@ class StudentFilter(django_filters.FilterSet):
         fields = ["program_id", "level_id", "is_active"]
 
     def filter_search(self, queryset, name, value):
-        return queryset.filter(
-            full_name__icontains=value
-        ) | queryset.filter(
+        return queryset.filter(full_name__icontains=value) | queryset.filter(
             index_number__icontains=value
         )

@@ -1,63 +1,103 @@
 import csv
+
 from django.db import transaction
-from django.db.models import (
-    Count, Q, Sum, Value, OuterRef, Subquery, Prefetch, F
-)
+from django.db.models import Count, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import landscape, letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.lib.enums import TA_CENTER
-from rest_framework import status, viewsets, filters
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.generics import (
-    ListAPIView, RetrieveAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
+    ListAPIView,
+    ListCreateAPIView,
+    RetrieveAPIView,
+    RetrieveUpdateDestroyAPIView,
 )
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django_filters.rest_framework import DjangoFilterBackend
 
 from accounts.models import User
+
 from .filters import StudentFilter
 from .models import (
-    CarePlan, Level, Procedure, ProcedureStep, ProcedureStepScore,
-    Program, ReconciledScore, SiteSettings, Student, StudentProcedure
+    CarePlan,
+    Level,
+    Procedure,
+    ProcedureStep,
+    ProcedureStepScore,
+    Program,
+    ReconciledScore,
+    SiteSettings,
+    Student,
+    StudentProcedure,
 )
 from .permissions import IsAdmin, IsExaminer
 from .serializers import (
-    CarePlanCreateSerializer, CarePlanSerializer, DashboardStatsSerializer,
-    LevelSerializer, ProcedureAdminListSerializer, ProcedureCreateUpdateSerializer,
-    ProcedureDetailSerializer, ProcedureListSerializer,
-    ProcedureStepCreateUpdateSerializer, ProgramSerializer,
-    ReconciliationSerializer, StudentCreateUpdateSerializer, StudentSerializer,
-    SiteSettingsSerializer, UserCreateSerializer, UserSerializer, 
+    CarePlanCreateSerializer,
+    CarePlanSerializer,
+    DashboardStatsSerializer,
+    LevelSerializer,
+    ProcedureAdminListSerializer,
+    ProcedureCreateUpdateSerializer,
+    ProcedureDetailSerializer,
+    ProcedureListSerializer,
+    ProcedureStepCreateUpdateSerializer,
+    ProgramSerializer,
+    ReconciliationSerializer,
+    SiteSettingsSerializer,
+    StudentCreateUpdateSerializer,
+    StudentSerializer,
+    UserCreateSerializer,
+    UserSerializer,
 )
+
+# ─────────────────────────────────────────────
+# PAGINATION CLASSES
+# ─────────────────────────────────────────────
+
+
+class StudentPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 5000
+
+
+class GradesPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
 
 # ─────────────────────────────────────────────
 # SITESETTINGS VIEW
 # ─────────────────────────────────────────────
+
 
 class SiteSettingsView(APIView):
     """
     GET  /exams/settings/   – retrieve current settings
     PATCH /exams/settings/  – update one or more flags (admin only)
     """
+
     def get_permissions(self):
         if self.request.method == "GET":
             return [IsAuthenticated()]
         return [IsAuthenticated(), IsAdmin()]
- 
+
     def get(self, request):
         settings = SiteSettings.get()
         return Response(SiteSettingsSerializer(settings).data)
- 
+
     def patch(self, request):
         settings = SiteSettings.get()
         serializer = SiteSettingsSerializer(settings, data=request.data, partial=True)
@@ -71,6 +111,7 @@ class SiteSettingsView(APIView):
 # PROGRAM VIEWS
 # ─────────────────────────────────────────────
 
+
 class ProgramListView(ListAPIView):
     permission_classes = [IsAuthenticated, IsExaminer | IsAdmin]
     queryset = Program.objects.all()
@@ -78,14 +119,19 @@ class ProgramListView(ListAPIView):
 
 
 class ProgramViewSet(viewsets.ModelViewSet):
-    queryset = Program.objects.all()
-    serializer_class = ProgramSerializer
     permission_classes = [IsAuthenticated, IsAdmin]
+    serializer_class = ProgramSerializer
+    def get_queryset(self):
+        return Program.objects.annotate(
+            student_count=Count("students", distinct=True),
+            procedure_count=Count("procedures", distinct=True),
+        ).order_by("id")
 
 
 # ─────────────────────────────────────────────
 # LEVEL VIEWS
 # ─────────────────────────────────────────────
+
 
 class LevelListCreateView(ListCreateAPIView):
     queryset = Level.objects.all()
@@ -103,9 +149,15 @@ class LevelDetailView(RetrieveUpdateDestroyAPIView):
 # STUDENT VIEWS (Examiner-facing)
 # ─────────────────────────────────────────────
 
+
 class StudentByProgramView(ListAPIView):
     permission_classes = [IsAuthenticated, IsExaminer | IsAdmin]
     serializer_class = StudentSerializer
+    pagination_class = StudentPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["full_name", "index_number"]
+    ordering_fields = ["index_number", "full_name"]
+    ordering = ["index_number"]
 
     def get_queryset(self):
         program_id = self.kwargs["program_id"]
@@ -128,15 +180,14 @@ class StudentDetailView(RetrieveAPIView):
 # PROCEDURE VIEWS (Examiner-facing)
 # ─────────────────────────────────────────────
 
+
 class ProcedureByProgramView(ListAPIView):
     permission_classes = [IsAuthenticated, IsExaminer | IsAdmin]
     serializer_class = ProcedureListSerializer
 
     def get_queryset(self):
-        return (
-            Procedure.objects
-            .filter(program_id=self.kwargs["program_id"])
-            .annotate(step_count=Count("steps"))
+        return Procedure.objects.filter(program_id=self.kwargs["program_id"]).annotate(
+            step_count=Count("steps")
         )
 
     def get_serializer_context(self):
@@ -147,14 +198,10 @@ class ProcedureByProgramView(ListAPIView):
         # Pre-fetch all StudentProcedures for this student/program in ONE query
         # and pass a lookup map to the serializer – eliminates N+1
         if student_id:
-            sps = (
-                StudentProcedure.objects
-                .filter(
-                    student_id=student_id,
-                    procedure__program_id=self.kwargs["program_id"],
-                )
-                .select_related("examiner_a", "examiner_b", "assigned_reconciler")
-            )
+            sps = StudentProcedure.objects.filter(
+                student_id=student_id,
+                procedure__program_id=self.kwargs["program_id"],
+            ).select_related("examiner_a", "examiner_b", "assigned_reconciler")
             context["student_procedures_map"] = {sp.procedure_id: sp for sp in sps}
         return context
 
@@ -163,6 +210,59 @@ class ProcedureDetailView(RetrieveAPIView):
     permission_classes = [IsAuthenticated, IsExaminer]
     queryset = Procedure.objects.prefetch_related("steps")
     serializer_class = ProcedureDetailSerializer
+
+    # def retrieve(self, request, *args, **kwargs):
+    #     student_id = self.kwargs.get("student_id")
+    #     procedure = self.get_object()
+
+    #     sp, _ = StudentProcedure.objects.select_related(
+    #         "examiner_a", "examiner_b", "assigned_reconciler"
+    #     ).get_or_create(
+    #         student_id=student_id,
+    #         procedure=procedure,
+    #         defaults={
+    #             "examiner_a": request.user,
+    #             "examiner_b": request.user,
+    #         },
+    #     )
+
+    #     if sp.examiner_a == sp.examiner_b:
+    #         if sp.examiner_a != request.user:
+    #             sp.examiner_b = request.user
+    #             sp.save(update_fields=["examiner_b"])
+    #     elif request.user not in (sp.examiner_a, sp.examiner_b):
+    #         total_steps = sp.procedure.steps.count()
+    #         score_counts = (
+    #             sp.step_scores
+    #             .values("examiner")
+    #             .annotate(c=Count("id"))
+    #         )
+    #         score_map = {s["examiner"]: s["c"] for s in score_counts}
+    #         both_scored = (
+    #             score_map.get(sp.examiner_a_id, 0) == total_steps and
+    #             score_map.get(sp.examiner_b_id, 0) == total_steps
+    #         )
+    #         return Response(
+    #             {
+    #                 "detail": "You are not assigned as an examiner for this procedure.",
+    #                 "examiner_a": sp.examiner_a.get_full_name(),
+    #                 "examiner_b": sp.examiner_b.get_full_name(),
+    #                 "is_locked": both_scored or sp.assigned_reconciler is not None,
+    #             },
+    #             status=status.HTTP_403_FORBIDDEN,
+    #         )
+
+    #     if sp.assigned_reconciler and sp.status != "reconciled":
+    #         return Response(
+    #             {
+    #                 "detail": "This procedure is locked. A reconciler has been assigned.",
+    #                 "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
+    #                 "is_locked": True,
+    #             },
+    #             status=status.HTTP_403_FORBIDDEN,
+    #         )
+
+    #     return super().retrieve(request, *args, **kwargs)
 
     def retrieve(self, request, *args, **kwargs):
         student_id = self.kwargs.get("student_id")
@@ -174,37 +274,41 @@ class ProcedureDetailView(RetrieveAPIView):
             student_id=student_id,
             procedure=procedure,
             defaults={
-                "examiner_a": request.user,
-                "examiner_b": request.user,
+                "examiner_a": None,  # No assignment on open — deferred to first score save
+                "examiner_b": None,
             },
         )
 
-        if sp.examiner_a == sp.examiner_b:
-            if sp.examiner_a != request.user:
-                sp.examiner_b = request.user
-                sp.save(update_fields=["examiner_b"])
-        elif request.user not in (sp.examiner_a, sp.examiner_b):
-            total_steps = sp.procedure.steps.count()
-            score_counts = (
-                sp.step_scores
-                .values("examiner")
-                .annotate(c=Count("id"))
+        both_slots_filled = (
+            sp.examiner_a is not None
+            and sp.examiner_b is not None
+            and sp.examiner_a != sp.examiner_b
+        )
+        is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
+
+        # Block non-assigned examiners from viewing scored or reconciled procedures
+        if sp.status in ("scored", "reconciled") and not is_assigned:
+            return Response(
+                {
+                    "detail": "This procedure has been scored and is no longer accessible.",
+                    "is_locked": True,
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
-            score_map = {s["examiner"]: s["c"] for s in score_counts}
-            both_scored = (
-                score_map.get(sp.examiner_a_id, 0) == total_steps and
-                score_map.get(sp.examiner_b_id, 0) == total_steps
-            )
+
+        # Block non-assigned examiners once both slots are claimed
+        if both_slots_filled and not is_assigned:
             return Response(
                 {
                     "detail": "You are not assigned as an examiner for this procedure.",
                     "examiner_a": sp.examiner_a.get_full_name(),
                     "examiner_b": sp.examiner_b.get_full_name(),
-                    "is_locked": both_scored or sp.assigned_reconciler is not None,
+                    "is_locked": sp.assigned_reconciler is not None,
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # Block further scoring once a reconciler is assigned
         if sp.assigned_reconciler and sp.status != "reconciled":
             return Response(
                 {
@@ -227,6 +331,7 @@ class ProcedureDetailView(RetrieveAPIView):
 # AUTOSAVE SCORE
 # ─────────────────────────────────────────────
 
+
 class AutosaveStepScoreView(APIView):
     permission_classes = [IsAuthenticated, IsExaminer]
 
@@ -245,8 +350,9 @@ class AutosaveStepScoreView(APIView):
 
         try:
             sp = (
-                StudentProcedure.objects
-                .select_related("examiner_a", "examiner_b", "assigned_reconciler", "procedure")
+                StudentProcedure.objects.select_related(
+                    "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+                )
                 .select_for_update()
                 .get(id=student_procedure_id)
             )
@@ -256,11 +362,28 @@ class AutosaveStepScoreView(APIView):
         except ProcedureStep.DoesNotExist:
             return Response({"detail": "ProcedureStep not found."}, status=404)
 
+        # if request.user not in (sp.examiner_a, sp.examiner_b):
+        #     return Response(
+        #         {"detail": "You are not authorized to score this procedure."},
+        #         status=status.HTTP_403_FORBIDDEN,
+        #     )
+
         if request.user not in (sp.examiner_a, sp.examiner_b):
-            return Response(
-                {"detail": "You are not authorized to score this procedure."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            # Slot A is still open — claim it now on first score save
+            if sp.examiner_a is None:
+                sp.examiner_a = request.user
+                sp.save(update_fields=["examiner_a"])
+            # Slot B is still open — claim it now on first score save
+            elif sp.examiner_b is None or sp.examiner_a == sp.examiner_b:
+                sp.examiner_b = request.user
+                sp.save(update_fields=["examiner_b"])
+            # Both slots genuinely taken — deny
+            else:
+                return Response(
+                    {"detail": "You are not authorized to score this procedure."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         if sp.assigned_reconciler:
             return Response(
                 {"detail": "Cannot modify scores. Reconciler has been assigned."},
@@ -282,7 +405,25 @@ class AutosaveStepScoreView(APIView):
         examiner_a_complete = False
         examiner_b_complete = False
 
-        if sp.examiner_a != sp.examiner_b:
+        # if sp.examiner_a != sp.examiner_b:
+        #     total_steps = sp.procedure.steps.count()
+        #     score_map = {
+        #         s["examiner"]: s["c"]
+        #         for s in sp.step_scores.values("examiner").annotate(c=Count("id"))
+        #     }
+        #     examiner_a_complete = score_map.get(sp.examiner_a_id, 0) == total_steps
+        #     examiner_b_complete = score_map.get(sp.examiner_b_id, 0) == total_steps
+
+        #     if examiner_a_complete and examiner_b_complete and sp.status == "pending":
+        #         sp.status = "scored"
+        #         sp.save(update_fields=["status"])
+
+        both_assigned = (
+            sp.examiner_a is not None
+            and sp.examiner_b is not None
+            and sp.examiner_a != sp.examiner_b
+        )
+        if both_assigned:
             total_steps = sp.procedure.steps.count()
             score_map = {
                 s["examiner"]: s["c"]
@@ -303,7 +444,7 @@ class AutosaveStepScoreView(APIView):
                 "status": sp.status,
                 "examiner_a_complete": examiner_a_complete,
                 "examiner_b_complete": examiner_b_complete,
-                "both_examiners_assigned": sp.examiner_a != sp.examiner_b,
+                "both_examiners_assigned": both_assigned,
                 "is_locked": sp.assigned_reconciler is not None,
             },
             status=status.HTTP_200_OK,
@@ -313,6 +454,7 @@ class AutosaveStepScoreView(APIView):
 # ─────────────────────────────────────────────
 # RECONCILIATION
 # ─────────────────────────────────────────────
+
 
 class ReconciliationView(RetrieveAPIView):
     permission_classes = [IsAuthenticated, IsExaminer]
@@ -328,8 +470,12 @@ class ReconciliationView(RetrieveAPIView):
         obj = (
             self.get_queryset()
             .select_related(
-                "examiner_a", "examiner_b", "reconciled_by",
-                "assigned_reconciler", "student", "procedure",
+                "examiner_a",
+                "examiner_b",
+                "reconciled_by",
+                "assigned_reconciler",
+                "student",
+                "procedure",
             )
             .prefetch_related(
                 Prefetch(
@@ -377,8 +523,7 @@ class SaveReconciliationView(APIView):
 
         try:
             sp = (
-                StudentProcedure.objects
-                .select_related("procedure")
+                StudentProcedure.objects.select_related("procedure")
                 .select_for_update()
                 .get(id=student_procedure_id)
             )
@@ -394,7 +539,9 @@ class SaveReconciliationView(APIView):
         total_steps = sp.procedure.steps.count()
         if len(reconciled_scores) != total_steps:
             return Response(
-                {"detail": f"Expected {total_steps} scores, got {len(reconciled_scores)}."},
+                {
+                    "detail": f"Expected {total_steps} scores, got {len(reconciled_scores)}."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -408,7 +555,9 @@ class SaveReconciliationView(APIView):
 
         valid_steps = {
             s.id: s
-            for s in ProcedureStep.objects.filter(id__in=step_ids, procedure=sp.procedure)
+            for s in ProcedureStep.objects.filter(
+                id__in=step_ids, procedure=sp.procedure
+            )
         }
         if len(valid_steps) != total_steps:
             return Response(
@@ -418,15 +567,17 @@ class SaveReconciliationView(APIView):
 
         # Replace reconciled scores atomically
         sp.reconciled_scores.all().delete()
-        ReconciledScore.objects.bulk_create([
-            ReconciledScore(
-                student_procedure=sp,
-                step=valid_steps[s["step_id"]],
-                score=s["score"],
-                reconciled_by=request.user,
-            )
-            for s in reconciled_scores
-        ])
+        ReconciledScore.objects.bulk_create(
+            [
+                ReconciledScore(
+                    student_procedure=sp,
+                    step=valid_steps[s["step_id"]],
+                    score=s["score"],
+                    reconciled_by=request.user,
+                )
+                for s in reconciled_scores
+            ]
+        )
 
         sp.status = "reconciled"
         sp.reconciled_by = request.user
@@ -447,6 +598,7 @@ class SaveReconciliationView(APIView):
 # ─────────────────────────────────────────────
 # ADMIN: DASHBOARD
 # ─────────────────────────────────────────────
+
 
 class DashboardStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
@@ -481,6 +633,7 @@ class DashboardStatsView(APIView):
 # ADMIN: EXAMINERS
 # ─────────────────────────────────────────────
 
+
 class ExaminerViewSet(viewsets.ModelViewSet):
     queryset = User.objects.filter(role="examiner")
     permission_classes = [IsAuthenticated, IsAdmin]
@@ -500,16 +653,15 @@ class ExaminerViewSet(viewsets.ModelViewSet):
 # ADMIN: STUDENTS
 # ─────────────────────────────────────────────
 
-class StudentPagination(PageNumberPagination):
-    page_size = 100
-    page_size_query_param = "page_size"
-    max_page_size = 5000
-
 
 class StudentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin]
     pagination_class = StudentPagination
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_class = StudentFilter
     search_fields = ["full_name", "index_number"]
     ordering_fields = ["full_name", "index_number", "level__number", "program__name"]
@@ -555,10 +707,15 @@ class StudentViewSet(viewsets.ModelViewSet):
         writer = csv.writer(response)
         writer.writerow(["Index Number", "Full Name", "Program", "Level", "Status"])
         for item in data:
-            writer.writerow([
-                item["index_number"], item["full_name"],
-                item["program_name"], item["level"], item["is_active"],
-            ])
+            writer.writerow(
+                [
+                    item["index_number"],
+                    item["full_name"],
+                    item["program_name"],
+                    item["level"],
+                    item["is_active"],
+                ]
+            )
         return response
 
     def _export_excel(self, data):
@@ -570,10 +727,15 @@ class StudentViewSet(viewsets.ModelViewSet):
         for cell in ws[1]:
             cell.font = Font(bold=True)
         for item in data:
-            ws.append([
-                item["index_number"], item["full_name"],
-                item["program_name"], item["level"], item["is_active"],
-            ])
+            ws.append(
+                [
+                    item["index_number"],
+                    item["full_name"],
+                    item["program_name"],
+                    item["level"],
+                    item["is_active"],
+                ]
+            )
         for column in ws.columns:
             width = max((len(str(c.value)) for c in column if c.value), default=10)
             ws.column_dimensions[column[0].column_letter].width = min(width + 2, 50)
@@ -595,22 +757,31 @@ class StudentViewSet(viewsets.ModelViewSet):
         ]
         table_data = [["Index Number", "Full Name", "Program", "Level", "Status"]]
         for item in data:
-            table_data.append([
-                item["index_number"], item["full_name"],
-                item["program_name"], item["level"], item["is_active"],
-            ])
+            table_data.append(
+                [
+                    item["index_number"],
+                    item["full_name"],
+                    item["program_name"],
+                    item["level"],
+                    item["is_active"],
+                ]
+            )
         table = Table(table_data)
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 10),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
-            ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
-            ("GRID", (0, 0), (-1, -1), 1, colors.black),
-            ("FONTSIZE", (0, 1), (-1, -1), 9),
-        ]))
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
+                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("FONTSIZE", (0, 1), (-1, -1), 9),
+                ]
+            )
+        )
         elements.append(table)
         doc.build(elements)
         return response
@@ -632,7 +803,9 @@ class ImportStudentsView(APIView):
         file = request.FILES["file"]
         ext = file.name.rsplit(".", 1)[-1].lower()
         if ext not in ("csv", "xlsx", "xls"):
-            return Response({"error": "Invalid file format. Use CSV or Excel."}, status=400)
+            return Response(
+                {"error": "Invalid file format. Use CSV or Excel."}, status=400
+            )
         try:
             if ext == "csv":
                 return self._import_csv(file)
@@ -672,7 +845,10 @@ class ImportStudentsView(APIView):
                 program_name = str(row.get("Program", "")).strip()
                 level_str = str(row.get("Level", "Level 100")).strip()
                 is_active = str(row.get("Status", "Yes")).strip().lower() in (
-                    "yes", "true", "1", "active"
+                    "yes",
+                    "true",
+                    "1",
+                    "active",
                 )
 
                 if not index_number or not full_name or not program_name:
@@ -691,7 +867,9 @@ class ImportStudentsView(APIView):
                 if level_str not in levels:
                     levels[level_str], _ = Level.objects.get_or_create(name=level_str)
                 if program_name not in programs:
-                    programs[program_name], _ = Program.objects.get_or_create(name=program_name)
+                    programs[program_name], _ = Program.objects.get_or_create(
+                        name=program_name
+                    )
 
                 _, was_created = Student.objects.update_or_create(
                     index_number=index_number,
@@ -710,13 +888,15 @@ class ImportStudentsView(APIView):
                 error_details.append(f"Row {row_num}: {e}")
                 errors += 1
 
-        return Response({
-            "success": True,
-            "created": created,
-            "updated": updated,
-            "errors": errors,
-            "error_details": error_details[:10],
-        })
+        return Response(
+            {
+                "success": True,
+                "created": created,
+                "updated": updated,
+                "errors": errors,
+                "error_details": error_details[:10],
+            }
+        )
 
 
 class DownloadStudentTemplateView(APIView):
@@ -729,9 +909,15 @@ class DownloadStudentTemplateView(APIView):
         ws.append(["Index Number", "Full Name", "Program", "Level", "Status"])
         for cell in ws[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        ws.append(["L100-001", "John Doe", "Registered General Nursing", "Level 100", "Yes"])
-        ws.append(["L200-002", "Jane Smith", "Public Health Nursing", "Level 200", "Yes"])
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
+        ws.append(
+            ["L100-001", "John Doe", "Registered General Nursing", "Level 100", "Yes"]
+        )
+        ws.append(
+            ["L200-002", "Jane Smith", "Public Health Nursing", "Level 200", "Yes"]
+        )
 
         ws_inst = wb.create_sheet("Instructions")
         for row in [
@@ -747,7 +933,9 @@ class DownloadStudentTemplateView(APIView):
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        response["Content-Disposition"] = 'attachment; filename="students_import_template.xlsx"'
+        response["Content-Disposition"] = (
+            'attachment; filename="students_import_template.xlsx"'
+        )
         wb.save(response)
         return response
 
@@ -759,34 +947,46 @@ class BulkDeleteStudentsView(APIView):
     def post(self, request):
         ids = request.data.get("student_ids", [])
         if not ids or not isinstance(ids, list):
-            return Response({"error": "student_ids must be a non-empty list"}, status=400)
+            return Response(
+                {"error": "student_ids must be a non-empty list"}, status=400
+            )
         count, _ = Student.objects.filter(id__in=ids).delete()
         if count == 0:
-            return Response({"error": "No students found with provided IDs"}, status=404)
-        return Response({"success": True, "deleted_count": count,
-                         "message": f"Successfully deleted {count} student(s)"})
+            return Response(
+                {"error": "No students found with provided IDs"}, status=404
+            )
+        return Response(
+            {
+                "success": True,
+                "deleted_count": count,
+                "message": f"Successfully deleted {count} student(s)",
+            }
+        )
 
 
 # ─────────────────────────────────────────────
 # ADMIN: PROCEDURES
 # ─────────────────────────────────────────────
 
+
 class ProcedurePagination(PageNumberPagination):
     page_size = 100
     page_size_query_param = "page_size"
     max_page_size = 5000
 
+
 class ProcedureViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin]
     pagination_class = ProcedurePagination
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter,]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+    ]
     search_fields = ["name"]
 
     def get_queryset(self):
-        qs = (
-            Procedure.objects
-            .select_related("program")
-            .annotate(step_count=Count("steps"))
+        qs = Procedure.objects.select_related("program").annotate(
+            step_count=Count("steps")
         )
         program_id = self.request.query_params.get("program_id")
         if program_id and program_id != "all":
@@ -807,10 +1007,8 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         return super().list(request, *args, **kwargs)
 
     def _handle_export(self, request, export_format):
-        procedures = (
-            Procedure.objects
-            .select_related("program")
-            .prefetch_related("steps")
+        procedures = Procedure.objects.select_related("program").prefetch_related(
+            "steps"
         )
         program_id = request.query_params.get("program_id")
         if program_id and program_id != "all":
@@ -832,15 +1030,21 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         ws_proc.append(headers_p)
         for cell in ws_proc[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
         for proc in procedures:
-            ws_proc.append([proc.name, proc.program.name, proc.total_score, proc.steps.count()])
+            ws_proc.append(
+                [proc.name, proc.program.name, proc.total_score, proc.steps.count()]
+            )
 
         ws_steps = wb.create_sheet("Procedure Steps")
         ws_steps.append(["Procedure Name", "Step Order", "Description"])
         for cell in ws_steps[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
+            cell.fill = PatternFill(
+                start_color="70AD47", end_color="70AD47", fill_type="solid"
+            )
         for proc in procedures:
             for step in proc.steps.all().order_by("step_order"):
                 ws_steps.append([proc.name, step.step_order, step.description])
@@ -853,38 +1057,63 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        response["Content-Disposition"] = 'attachment; filename="procedures_and_steps.xlsx"'
+        response["Content-Disposition"] = (
+            'attachment; filename="procedures_and_steps.xlsx"'
+        )
         wb.save(response)
         return response
 
     def _export_csv(self, procedures):
         response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="procedures_and_steps.csv"'
+        response["Content-Disposition"] = (
+            'attachment; filename="procedures_and_steps.csv"'
+        )
         writer = csv.writer(response)
-        writer.writerow(["Procedure Name", "Program", "Total Score", "Step Order", "Step Description"])
+        writer.writerow(
+            [
+                "Procedure Name",
+                "Program",
+                "Total Score",
+                "Step Order",
+                "Step Description",
+            ]
+        )
         for proc in procedures:
             steps = list(proc.steps.order_by("step_order"))
             if steps:
                 for step in steps:
-                    writer.writerow([proc.name, proc.program.name, proc.total_score,
-                                     step.step_order, step.description])
+                    writer.writerow(
+                        [
+                            proc.name,
+                            proc.program.name,
+                            proc.total_score,
+                            step.step_order,
+                            step.description,
+                        ]
+                    )
             else:
-                writer.writerow([proc.name, proc.program.name, proc.total_score, "", ""])
+                writer.writerow(
+                    [proc.name, proc.program.name, proc.total_score, "", ""]
+                )
         return response
 
     def _export_pdf(self, procedures):
         response = HttpResponse(content_type="application/pdf")
-        response["Content-Disposition"] = 'attachment; filename="procedures_and_steps.pdf"'
+        response["Content-Disposition"] = (
+            'attachment; filename="procedures_and_steps.pdf"'
+        )
         doc = SimpleDocTemplate(response, pagesize=landscape(letter))
         elements = []
         styles = getSampleStyleSheet()
         elements.append(Paragraph("Procedures and Steps", styles["Title"]))
         elements.append(Spacer(1, 20))
         for proc in procedures:
-            elements.append(Paragraph(
-                f"<b>{proc.name}</b> – {proc.program.name} (Total Score: {proc.total_score})",
-                styles["Heading2"],
-            ))
+            elements.append(
+                Paragraph(
+                    f"<b>{proc.name}</b> – {proc.program.name} (Total Score: {proc.total_score})",
+                    styles["Heading2"],
+                )
+            )
             elements.append(Spacer(1, 8))
             steps = list(proc.steps.order_by("step_order"))
             if steps:
@@ -892,16 +1121,20 @@ class ProcedureViewSet(viewsets.ModelViewSet):
                     [str(s.step_order), s.description] for s in steps
                 ]
                 t = Table(table_data, colWidths=[50, 450])
-                t.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
-                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ]))
+                t.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTSIZE", (0, 0), (-1, -1), 9),
+                            ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
+                            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ]
+                    )
+                )
                 elements.append(t)
             else:
                 elements.append(Paragraph("<i>No steps defined</i>", styles["Normal"]))
@@ -917,12 +1150,21 @@ class BulkDeleteProceduresView(APIView):
     def post(self, request):
         ids = request.data.get("procedure_ids", [])
         if not ids or not isinstance(ids, list):
-            return Response({"error": "procedure_ids must be a non-empty list"}, status=400)
+            return Response(
+                {"error": "procedure_ids must be a non-empty list"}, status=400
+            )
         count, _ = Procedure.objects.filter(id__in=ids).delete()
         if count == 0:
-            return Response({"error": "No procedures found with provided ID(s)"}, status=404)
-        return Response({"success": True, "deleted_count": count,
-                         "message": f"Successfully deleted {count} procedure(s)"})
+            return Response(
+                {"error": "No procedures found with provided ID(s)"}, status=404
+            )
+        return Response(
+            {
+                "success": True,
+                "deleted_count": count,
+                "message": f"Successfully deleted {count} procedure(s)",
+            }
+        )
 
 
 class ImportProceduresView(APIView):
@@ -943,7 +1185,9 @@ class ImportProceduresView(APIView):
         try:
             decoded = file.read().decode("utf-8").splitlines()
         except UnicodeDecodeError:
-            return Response({"error": "File encoding error. Save as UTF-8."}, status=400)
+            return Response(
+                {"error": "File encoding error. Save as UTF-8."}, status=400
+            )
         return self._process_csv_data(csv.DictReader(decoded))
 
     @transaction.atomic
@@ -965,7 +1209,9 @@ class ImportProceduresView(APIView):
             desc = row.get("Step Description", "").strip()
             if order_s and desc:
                 try:
-                    groups[name]["steps"].append({"order": int(order_s), "description": desc})
+                    groups[name]["steps"].append(
+                        {"order": int(order_s), "description": desc}
+                    )
                 except ValueError:
                     errors.append(f"Row {row_num}: Invalid step order '{order_s}'")
 
@@ -981,7 +1227,9 @@ class ImportProceduresView(APIView):
             if prog_name:
                 prog = programs.get(prog_name)
                 if not prog:
-                    errors.append(f"Procedure '{name}': Program '{prog_name}' not found")
+                    errors.append(
+                        f"Procedure '{name}': Program '{prog_name}' not found"
+                    )
                     continue
                 target_programs = [prog]
             else:
@@ -996,22 +1244,25 @@ class ImportProceduresView(APIView):
                     procs_updated += 1
                 for step in data["steps"]:
                     _, sc = ProcedureStep.objects.update_or_create(
-                        procedure=proc, step_order=step["order"],
+                        procedure=proc,
+                        step_order=step["order"],
                         defaults={"description": step["description"]},
                     )
                     if sc:
                         steps_created += 1
                     else:
                         steps_updated += 1
-        return Response({
-            "success": True,
-            "procedures_created": procs_created,
-            "procedures_updated": procs_updated,
-            "steps_created": steps_created,
-            "steps_updated": steps_updated,
-            "errors": len(errors),
-            "error_details": errors[:20],
-        })
+        return Response(
+            {
+                "success": True,
+                "procedures_created": procs_created,
+                "procedures_updated": procs_updated,
+                "steps_created": steps_created,
+                "steps_updated": steps_updated,
+                "errors": len(errors),
+                "error_details": errors[:20],
+            }
+        )
 
     def _import_excel(self, file):
         try:
@@ -1019,7 +1270,9 @@ class ImportProceduresView(APIView):
         except Exception as e:
             return Response({"error": f"Failed to read Excel file: {e}"}, status=400)
         if "Procedures" not in wb.sheetnames:
-            return Response({"error": 'Sheet "Procedures" not found in Excel file'}, status=400)
+            return Response(
+                {"error": 'Sheet "Procedures" not found in Excel file'}, status=400
+            )
 
         procs_created = procs_updated = steps_created = steps_updated = 0
         errors = []
@@ -1028,7 +1281,9 @@ class ImportProceduresView(APIView):
 
         with transaction.atomic():
             ws_proc = wb["Procedures"]
-            for row_num, row in enumerate(ws_proc.iter_rows(min_row=2, values_only=True), start=2):
+            for row_num, row in enumerate(
+                ws_proc.iter_rows(min_row=2, values_only=True), start=2
+            ):
                 if not any(row):
                     continue
                 try:
@@ -1044,14 +1299,18 @@ class ImportProceduresView(APIView):
                     if prog_name:
                         prog = programs.get(prog_name)
                         if not prog:
-                            errors.append(f"Procedures Row {row_num}: Program '{prog_name}' not found")
+                            errors.append(
+                                f"Procedures Row {row_num}: Program '{prog_name}' not found"
+                            )
                             continue
                         target_progs = [prog]
                     else:
                         target_progs = list(programs.values())
                     for prog in target_progs:
                         proc, created = Procedure.objects.update_or_create(
-                            name=name, program=prog, defaults={"total_score": total_score}
+                            name=name,
+                            program=prog,
+                            defaults={"total_score": total_score},
                         )
                         procedures_dict[(name, prog.name)] = proc
                         if created:
@@ -1063,7 +1322,9 @@ class ImportProceduresView(APIView):
 
             if "Procedure Steps" in wb.sheetnames:
                 ws_steps = wb["Procedure Steps"]
-                for row_num, row in enumerate(ws_steps.iter_rows(min_row=2, values_only=True), start=2):
+                for row_num, row in enumerate(
+                    ws_steps.iter_rows(min_row=2, values_only=True), start=2
+                ):
                     if not any(row):
                         continue
                     try:
@@ -1076,15 +1337,22 @@ class ImportProceduresView(APIView):
                         desc = str(row[2]).strip() if row[2] else ""
                         if not name or not desc:
                             continue
-                        matching = [proc for (n, _), proc in procedures_dict.items() if n == name]
+                        matching = [
+                            proc
+                            for (n, _), proc in procedures_dict.items()
+                            if n == name
+                        ]
                         if not matching:
                             matching = list(Procedure.objects.filter(name=name))
                         if not matching:
-                            errors.append(f"Steps Row {row_num}: Procedure '{name}' not found")
+                            errors.append(
+                                f"Steps Row {row_num}: Procedure '{name}' not found"
+                            )
                             continue
                         for proc in matching:
                             _, sc = ProcedureStep.objects.update_or_create(
-                                procedure=proc, step_order=order,
+                                procedure=proc,
+                                step_order=order,
                                 defaults={"description": desc},
                             )
                             if sc:
@@ -1094,15 +1362,17 @@ class ImportProceduresView(APIView):
                     except Exception as e:
                         errors.append(f"Steps Row {row_num}: {e}")
 
-        return Response({
-            "success": True,
-            "procedures_created": procs_created,
-            "procedures_updated": procs_updated,
-            "steps_created": steps_created,
-            "steps_updated": steps_updated,
-            "errors": len(errors),
-            "error_details": errors[:20],
-        })
+        return Response(
+            {
+                "success": True,
+                "procedures_created": procs_created,
+                "procedures_updated": procs_updated,
+                "steps_created": steps_created,
+                "steps_updated": steps_updated,
+                "errors": len(errors),
+                "error_details": errors[:20],
+            }
+        )
 
 
 class DownloadProcedureTemplateView(APIView):
@@ -1115,7 +1385,9 @@ class DownloadProcedureTemplateView(APIView):
         ws_proc.append(["Name", "Program", "Total Score"])
         for cell in ws_proc[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
         ws_proc.append(["Vital Signs Assessment", "Bachelor of Science in Nursing", 20])
         ws_proc.append(["IV Catheter Insertion", "Bachelor of Science in Nursing", 20])
 
@@ -1123,16 +1395,28 @@ class DownloadProcedureTemplateView(APIView):
         ws_steps.append(["Procedure Name", "Step Order", "Description"])
         for cell in ws_steps[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
-        ws_steps.append(["Vital Signs Assessment", 1, "Introduce yourself and explain the procedure"])
+            cell.fill = PatternFill(
+                start_color="70AD47", end_color="70AD47", fill_type="solid"
+            )
+        ws_steps.append(
+            [
+                "Vital Signs Assessment",
+                1,
+                "Introduce yourself and explain the procedure",
+            ]
+        )
         ws_steps.append(["Vital Signs Assessment", 2, "Wash hands and put on gloves"])
 
-        wb.create_sheet("Instructions").append(["See column headers for required fields."])
+        wb.create_sheet("Instructions").append(
+            ["See column headers for required fields."]
+        )
 
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        response["Content-Disposition"] = 'attachment; filename="procedures_import_template.xlsx"'
+        response["Content-Disposition"] = (
+            'attachment; filename="procedures_import_template.xlsx"'
+        )
         wb.save(response)
         return response
 
@@ -1171,7 +1455,11 @@ class ImportProcedureStepsView(APIView):
                 wb = load_workbook(file, data_only=True)
                 ws = wb.active
                 headers = [c.value for c in ws[1]]
-                data = [dict(zip(headers, row)) for row in ws.iter_rows(min_row=2, values_only=True) if any(row)]
+                data = [
+                    dict(zip(headers, row))
+                    for row in ws.iter_rows(min_row=2, values_only=True)
+                    if any(row)
+                ]
             return self._process_import(data, procedure)
         except Exception as e:
             return Response({"error": str(e)}, status=400)
@@ -1184,7 +1472,9 @@ class ImportProcedureStepsView(APIView):
             order_s = str(row.get("Step Order", "")).strip()
             desc = str(row.get("Description", "")).strip()
             if not order_s or not desc:
-                error_details.append(f"Row {row_num}: Missing step order or description")
+                error_details.append(
+                    f"Row {row_num}: Missing step order or description"
+                )
                 errors += 1
                 continue
             try:
@@ -1194,17 +1484,23 @@ class ImportProcedureStepsView(APIView):
                 errors += 1
                 continue
             _, was_created = ProcedureStep.objects.update_or_create(
-                procedure=procedure, step_order=order,
+                procedure=procedure,
+                step_order=order,
                 defaults={"description": desc},
             )
             if was_created:
                 created += 1
             else:
                 updated += 1
-        return Response({
-            "success": True, "created": created, "updated": updated,
-            "errors": errors, "error_details": error_details[:20],
-        })
+        return Response(
+            {
+                "success": True,
+                "created": created,
+                "updated": updated,
+                "errors": errors,
+                "error_details": error_details[:20],
+            }
+        )
 
 
 class DownloadProcedureStepsTemplateView(APIView):
@@ -1221,7 +1517,9 @@ class DownloadProcedureStepsTemplateView(APIView):
         ws.append(["Step Order", "Description"])
         for cell in ws[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
+            cell.fill = PatternFill(
+                start_color="70AD47", end_color="70AD47", fill_type="solid"
+            )
         steps = procedure.steps.order_by("step_order")
         if steps.exists():
             for step in steps:
@@ -1233,7 +1531,9 @@ class DownloadProcedureStepsTemplateView(APIView):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         safe_name = "".join(c for c in procedure.name if c.isalnum() or c in " _-")
-        response["Content-Disposition"] = f'attachment; filename="{safe_name}_steps_template.xlsx"'
+        response["Content-Disposition"] = (
+            f'attachment; filename="{safe_name}_steps_template.xlsx"'
+        )
         wb.save(response)
         return response
 
@@ -1241,12 +1541,6 @@ class DownloadProcedureStepsTemplateView(APIView):
 # ─────────────────────────────────────────────
 # ADMIN: GRADES
 # ─────────────────────────────────────────────
-
-class GradesPagination(PageNumberPagination):
-    page_size = 50
-    page_size_query_param = "page_size"
-    max_page_size = 500
-
 
 SORT_FIELD_MAP = {
     "index_number": "index_number",
@@ -1261,41 +1555,32 @@ class StudentGradesView(APIView):
 
     def get(self, request):
         export_format = request.query_params.get("export")
+        grade_filter = request.query_params.get("grade", "").strip()
+
         students = self._get_students(request)
+        grades_data = self._build_grades_data(students)
 
+        if grade_filter:
+            grades_data = [
+                g for g in grades_data if g["grade"].lower() == grade_filter.lower()
+            ]
+
+        # ───────── EXPORT ─────────
         if export_format:
-            grades_data = self._build_grades_data(students)
-            if export_format == "csv":
-                return self._export_csv(grades_data)
-            if export_format == "excel":
-                return self._export_excel(grades_data)
-            if export_format == "pdf":
-                return self._export_pdf(
-                    grades_data,
-                    request.query_params.get("program_id"),
-                    request.query_params.get("level_id"),
-                )
-            return Response({"error": "Invalid export format"}, status=400)
+            return self._handle_export(request, grades_data, grade_filter)
 
-        # DB-level sort for supported fields
         sort_by = request.query_params.get("sort_by", "index_number")
         order = request.query_params.get("order", "asc")
-        db_field = SORT_FIELD_MAP.get(sort_by)
-        if db_field:
-            students = students.order_by(f"-{db_field}" if order == "desc" else db_field)
 
-        paginator = GradesPagination()
-        page_qs = paginator.paginate_queryset(students, request)
-        grades_data = self._build_grades_data(page_qs)
-
-        # Client-side sort for computed fields (percentage, grade)
-        if sort_by in ("percentage", "total_score") and not db_field:
+        if sort_by in ("percentage", "total_score"):
             grades_data.sort(
                 key=lambda x: x.get(sort_by, 0),
                 reverse=(order == "desc"),
             )
 
-        return paginator.get_paginated_response(grades_data)
+        paginator = GradesPagination()
+        page = paginator.paginate_queryset(grades_data, request)
+        return paginator.get_paginated_response(page)
 
     # ------------------------------------------------------------------
     # Query builder
@@ -1305,47 +1590,40 @@ class StudentGradesView(APIView):
         program_id = request.query_params.get("program_id")
         level_id = request.query_params.get("level_id")
         search = request.query_params.get("search", "").strip()
-        grade_filter = request.query_params.get("grade", "")
 
         procedure_score_sq = (
-            StudentProcedure.objects
-            .filter(student=OuterRef("pk"), status="reconciled")
+            StudentProcedure.objects.filter(student=OuterRef("pk"), status="reconciled")
             .values("student")
             .annotate(total=Sum("reconciled_scores__score"))
             .values("total")[:1]
         )
         procedure_max_sq = (
-            StudentProcedure.objects
-            .filter(student=OuterRef("pk"), status="reconciled")
+            StudentProcedure.objects.filter(student=OuterRef("pk"), status="reconciled")
             .values("student")
             .annotate(total=Sum("procedure__total_score"))
             .values("total")[:1]
         )
         procedure_count_sq = (
-            StudentProcedure.objects
-            .filter(student=OuterRef("pk"), status="reconciled")
+            StudentProcedure.objects.filter(student=OuterRef("pk"), status="reconciled")
             .values("student")
             .annotate(total=Count("id"))
             .values("total")[:1]
         )
         care_score_sq = (
-            CarePlan.objects
-            .filter(student=OuterRef("pk"))
+            CarePlan.objects.filter(student=OuterRef("pk"))
             .values("student")
             .annotate(total=Sum("score"))
             .values("total")[:1]
         )
         care_max_sq = (
-            CarePlan.objects
-            .filter(student=OuterRef("pk"))
+            CarePlan.objects.filter(student=OuterRef("pk"))
             .values("student")
             .annotate(total=Sum("max_score"))
             .values("total")[:1]
         )
 
         qs = (
-            Student.objects
-            .select_related("program", "level")
+            Student.objects.select_related("program", "level")
             .filter(is_active=True)
             .annotate(
                 procedure_score=Coalesce(Subquery(procedure_score_sq), Value(0)),
@@ -1377,25 +1655,27 @@ class StudentGradesView(APIView):
             total = proc_score + cp_score
             max_score = proc_max + (cp_max if cp_score > 0 else 0)
             pct = round((total / max_score * 100), 1) if max_score > 0 else 0.0
-            result.append({
-                "student_id": s.id,
-                "index_number": s.index_number,
-                "full_name": s.full_name,
-                "program_name": s.program.name,
-                "program_id": s.program_id,
-                "level": s.level.name if s.level else "",
-                "level_id": s.level_id,
-                "procedure_score": round(proc_score, 2),
-                "procedure_max_score": proc_max,
-                "care_plan_score": cp_score,
-                "care_plan_max_score": cp_max,
-                "total_score": round(total, 2),
-                "max_score": max_score,
-                "percentage": pct,
-                "grade": self._calculate_grade(pct),
-                "reconciled_count": s.reconciled_count,
-                "care_plan_completed": cp_score > 0,
-            })
+            result.append(
+                {
+                    "student_id": s.id,
+                    "index_number": s.index_number,
+                    "full_name": s.full_name,
+                    "program_name": s.program.name,
+                    "program_id": s.program_id,
+                    "level": s.level.name if s.level else "",
+                    "level_id": s.level_id,
+                    "procedure_score": round(proc_score, 2),
+                    "procedure_max_score": proc_max,
+                    "care_plan_score": cp_score,
+                    "care_plan_max_score": cp_max,
+                    "total_score": round(total, 2),
+                    "max_score": max_score,
+                    "percentage": pct,
+                    "grade": self._calculate_grade(pct),
+                    "reconciled_count": s.reconciled_count,
+                    "care_plan_completed": cp_score > 0,
+                }
+            )
         return result
 
     def _calculate_grade(self, pct):
@@ -1412,15 +1692,42 @@ class StudentGradesView(APIView):
     # ------------------------------------------------------------------
     # Export handlers
     # ------------------------------------------------------------------
+    def _handle_export(self, request, data, grade_filter):
+        export_format = request.query_params.get("export")
+
+        if export_format == "csv":
+            return self._export_csv(data)
+
+        if export_format == "excel":
+            return self._export_excel(data)
+
+        if export_format == "pdf":
+            return self._export_pdf(
+                data,
+                request.query_params.get("program_id"),
+                request.query_params.get("level_id"),
+                grade_filter,
+            )
+
+        return Response({"error": "Invalid export format"}, status=400)
 
     EXPORT_HEADERS = [
-        "Index Number", "Full Name", "Program", "Level", "Percentage (%)", "Grade",
+        "Index Number",
+        "Full Name",
+        "Program",
+        "Level",
+        "Percentage (%)",
+        "Grade",
     ]
 
     def _row(self, item):
         return [
-            item["index_number"], item["full_name"], item["program_name"],
-            item["level"], item["percentage"], item["grade"],
+            item["index_number"],
+            item["full_name"],
+            item["program_name"],
+            item["level"],
+            item["percentage"],
+            item["grade"],
         ]
 
     def _export_csv(self, data):
@@ -1451,53 +1758,112 @@ class StudentGradesView(APIView):
         wb.save(response)
         return response
 
-    def _export_pdf(self, data, program_id=None, level_id=None):
+    def _export_pdf(self, data, program_id=None, level_id=None, grade=None):
         response = HttpResponse(content_type="application/pdf")
         response["Content-Disposition"] = 'attachment; filename="student_grades.pdf"'
         doc = SimpleDocTemplate(response, pagesize=landscape(letter))
         styles = getSampleStyleSheet()
-        centered = ParagraphStyle("Centered", parent=styles["Heading2"], alignment=TA_CENTER)
+        centered = ParagraphStyle(
+            "Centered", parent=styles["Heading2"], alignment=TA_CENTER
+        )
         elements = [Paragraph("STUDENT GRADES REPORT", styles["Title"])]
         if program_id:
-            prog_name = Program.objects.filter(id=program_id).values_list("name", flat=True).first()
+            prog_name = (
+                Program.objects.filter(id=program_id)
+                .values_list("name", flat=True)
+                .first()
+            )
             if prog_name:
                 elements.append(Paragraph(prog_name, centered))
         if level_id and level_id != "all":
-            level_name = Level.objects.filter(id=level_id).values_list("name", flat=True).first()
+            level_name = (
+                Level.objects.filter(id=level_id).values_list("name", flat=True).first()
+            )
             if level_name:
                 elements.append(Paragraph(level_name, centered))
+        if grade:
+            elements.append(Paragraph(f"Grade: {grade}", centered))
         elements.append(Paragraph("<br/><br/>", styles["Normal"]))
         table_data = [self.EXPORT_HEADERS] + [self._row(item) for item in data]
-        table_data[-len(data):] = [
-            [i["index_number"], i["full_name"], i["program_name"],
-             i["level"], f"{i['percentage']}%", i["grade"]]
+        table_data[-len(data) :] = [
+            [
+                i["index_number"],
+                i["full_name"],
+                i["program_name"],
+                i["level"],
+                f"{i['percentage']}%",
+                i["grade"],
+            ]
             for i in data
         ]
         t = Table(table_data, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("GRID", (0, 0), (-1, -1), 1, colors.black),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                ]
+            )
+        )
         elements.append(t)
         doc.build(elements)
         return response
+
+
+class GradeStatsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        view = StudentGradesView()
+
+        students = view._get_students(request)
+        data = view._build_grades_data(students)
+
+        grade_filter = request.query_params.get("grade", "").strip().lower()
+
+        # Apply same filtering logic
+        if grade_filter:
+            data = [g for g in data if g["grade"].lower() == grade_filter]
+
+        total = len(data)
+        completed = sum(1 for g in data if g["grade"] != "N/A")
+
+        avg = round(sum(g["percentage"] for g in data) / total, 2) if total > 0 else 0
+
+        grade_distribution = {}
+        for g in data:
+            grade_distribution[g["grade"]] = grade_distribution.get(g["grade"], 0) + 1
+
+        complete_careplan = sum(1 for g in data if g["care_plan_completed"])
+
+        return Response(
+            {
+                "total": total,
+                "completed": completed,
+                "average_percentage": avg,
+                "grade_distribution": grade_distribution,
+                "care_plan_completed": complete_careplan,
+            }
+        )
 
 
 # ─────────────────────────────────────────────
 # CARE PLAN
 # ─────────────────────────────────────────────
 
+
 class CarePlanView(APIView):
     """
     GET  – return existing care plan or {exists: False}
     POST – submit (or rescore, depending on the care_plan_lock_on_submit flag)
     """
+
     permission_classes = [IsAuthenticated]
- 
+
     def get(self, request, student_id, program_id):
         try:
             care_plan = CarePlan.objects.select_related("examiner").get(
@@ -1510,17 +1876,17 @@ class CarePlanView(APIView):
                 {"exists": False, "message": "No care plan found for this student"},
                 status=status.HTTP_200_OK,
             )
- 
+
     @transaction.atomic
     def post(self, request, student_id, program_id):
         site_settings = SiteSettings.get()
         lock_on_submit = site_settings.care_plan_lock_on_submit
- 
+
         existing = CarePlan.objects.filter(
             student_id=student_id,
             program_id=program_id,
         ).first()
- 
+
         if existing:
             if lock_on_submit:
                 # Flag is ON (default) – prevent rescoring
@@ -1532,37 +1898,41 @@ class CarePlanView(APIView):
                 # Flag is OFF – allow rescoring: update in-place
                 score = request.data.get("score")
                 comments = request.data.get("comments", existing.comments)
- 
+
                 if score is None:
                     return Response(
                         {"error": "score is required"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
- 
+
                 score_int = int(score)
                 if not (0 <= score_int <= 20):
                     return Response(
                         {"error": "Score must be between 0 and 20"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
- 
-                existing.score    = score_int
+
+                existing.score = score_int
                 existing.comments = comments
-                existing.examiner = request.user   # track who rescored
-                existing.is_locked = False          # stays unlocked
-                existing.save(update_fields=["score", "comments", "examiner", "is_locked"])
-                return Response(CarePlanSerializer(existing).data, status=status.HTTP_200_OK)
- 
+                existing.examiner = request.user  # track who rescored
+                existing.is_locked = False  # stays unlocked
+                existing.save(
+                    update_fields=["score", "comments", "examiner", "is_locked"]
+                )
+                return Response(
+                    CarePlanSerializer(existing).data, status=status.HTTP_200_OK
+                )
+
         # No existing care plan — create it
         data = request.data.copy()
         data["student"] = student_id
         data["program"] = program_id
- 
+
         serializer = CarePlanCreateSerializer(data=data)
         if serializer.is_valid():
             care_plan = serializer.save(
                 examiner=request.user,
-                is_locked=lock_on_submit,   # lock only when flag is ON
+                is_locked=lock_on_submit,  # lock only when flag is ON
             )
             return Response(
                 CarePlanSerializer(care_plan).data,
@@ -1572,7 +1942,7 @@ class CarePlanView(APIView):
 
 
 # Note: The original version of CarePlanView (below) was a simple create-once endpoint that locked the care plan after submission.
-# The new version (above) adds support for optional rescoring based on a site setting, allowing updates to the care plan score and comments if the lock_on_submit flag is turned off. 
+# The new version (above) adds support for optional rescoring based on a site setting, allowing updates to the care plan score and comments if the lock_on_submit flag is turned off.
 # The original version is kept here for reference and potential rollback if needed.
 
 # class CarePlanView(APIView):
@@ -1606,6 +1976,7 @@ class CarePlanView(APIView):
 # ASSIGN EXAMINERS (kept for compatibility)
 # ─────────────────────────────────────────────
 
+
 class AssignExaminersView(APIView):
     permission_classes = [IsAuthenticated, IsExaminer]
 
@@ -1622,11 +1993,15 @@ class AssignExaminersView(APIView):
         except (Student.DoesNotExist, Procedure.DoesNotExist, User.DoesNotExist) as e:
             return Response({"detail": f"Invalid reference: {e}"}, status=400)
         sp, created = StudentProcedure.objects.update_or_create(
-            student=student, procedure=procedure,
+            student=student,
+            procedure=procedure,
             defaults={"examiner_a": examiner_a, "examiner_b": examiner_b},
         )
-        return Response({
-            "id": sp.id, "created": created,
-            "examiner_a": examiner_a.get_full_name(),
-            "examiner_b": examiner_b.get_full_name(),
-        })
+        return Response(
+            {
+                "id": sp.id,
+                "created": created,
+                "examiner_a": examiner_a.get_full_name(),
+                "examiner_b": examiner_b.get_full_name(),
+            }
+        )

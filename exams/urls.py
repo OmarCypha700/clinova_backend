@@ -5,13 +5,14 @@ from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
                     BulkDeleteStudentsView, CarePlanView, DashboardStatsView,
                     DownloadProcedureStepsTemplateView,
                     DownloadProcedureTemplateView, DownloadStudentTemplateView,
-                    ExaminerViewSet, ImportProcedureStepsView,
-                    ImportProceduresView, ImportStudentsView, LevelListCreateView, 
-                    LevelDetailView, ProcedureByProgramView, ProcedureDetailView,
-                    ProcedureStepViewSet, ProcedureViewSet, ProgramListView,
-                    ProgramViewSet, ReconciliationView, SaveReconciliationView,
-                    StudentByProgramView, StudentDetailView, StudentGradesView,
-                    StudentViewSet, SiteSettingsView)
+                    ExaminerViewSet, GradeStatsView, ImportProcedureStepsView,
+                    ImportProceduresView, ImportStudentsView, LevelDetailView,
+                    LevelListCreateView, ProcedureByProgramView,
+                    ProcedureDetailView, ProcedureStepViewSet,
+                    ProcedureViewSet, ProgramListView, ProgramViewSet,
+                    ReconciliationView, SaveReconciliationView,
+                    SiteSettingsView, StudentByProgramView, StudentDetailView,
+                    StudentGradesView, StudentViewSet)
 
 # Router for viewsets
 router = DefaultRouter()
@@ -56,6 +57,7 @@ urlpatterns = [
     
     # Grades
     path("grades/", StudentGradesView.as_view(), name='student-grades'),
+    path("grade/stats/", GradeStatsView.as_view(), name='grade-stats'),
 
     # Procedure import/template
     path("procedures/import/", ImportProceduresView.as_view(), name='import-procedures'),
