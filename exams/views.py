@@ -61,6 +61,7 @@ from .serializers import (
     UserSerializer,
 )
 
+
 # ─────────────────────────────────────────────
 # PAGINATION CLASSES
 # ─────────────────────────────────────────────
@@ -387,7 +388,7 @@ class ProcedureByProgramView(ListAPIView):
         return (
             Procedure.objects.filter(program_id=self.kwargs["program_id"])
             .annotate(step_count=Count("steps"))
-            .order_by("id")
+            .order_by("pk")
         )
 
     def get_serializer_context(self):
