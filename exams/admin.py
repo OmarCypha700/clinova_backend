@@ -240,8 +240,8 @@ class StudentProcedureAdmin(ModelAdmin, ImportExportModelAdmin, ExportActionMixi
         "reconciled_by",
         "assessed_at",
     )
-    list_filter = ("status", "procedure", "assessed_at")
-    search_fields = ("student__index_number", "student__full_name", "procedure__name")
+    list_filter = ("status", "procedure", "assessed_at", "reconciled_by", "examiner_a", "examiner_b")
+    search_fields = ("student__index_number", "student__full_name", "procedure__name", "examiner_a__username", "examiner_b__username")
     date_hierarchy = "assessed_at"
     readonly_fields = ("assigned_reconciler",)
 
