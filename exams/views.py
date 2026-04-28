@@ -793,19 +793,260 @@ class DashboardStatsView(APIView):
 # ─────────────────────────────────────────────
 
 
-class ExaminerViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.filter(role="examiner")
-    permission_classes = [IsAuthenticated, IsAdmin]
+# class ExaminerViewSet(viewsets.ModelViewSet):
+#     queryset = User.objects.filter(role="examiner")
+#     permission_classes = [IsAuthenticated, IsAdmin]
 
+#     def get_serializer_class(self):
+#         return UserCreateSerializer if self.action == "create" else UserSerializer
+
+#     @action(detail=True, methods=["post"])
+#     def toggle_active(self, request, pk=None):
+#         user = self.get_object()
+#         user.is_active = not user.is_active
+#         user.save(update_fields=["is_active"])
+#         return Response({"is_active": user.is_active})
+
+
+class ExaminerViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsAdmin]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["username", "first_name", "last_name", "email"]
+    ordering_fields = ["username", "first_name", "date_joined", "is_active"]
+    ordering = ["username"]
+ 
+    DEFAULT_IMPORT_PASSWORD = "Change123!"
+ 
+    def get_queryset(self):
+        qs = User.objects.filter(role="examiner")
+        is_active = self.request.query_params.get("is_active")
+        if is_active == "true":
+            qs = qs.filter(is_active=True)
+        elif is_active == "false":
+            qs = qs.filter(is_active=False)
+        return qs
+ 
     def get_serializer_class(self):
         return UserCreateSerializer if self.action == "create" else UserSerializer
-
+ 
+    # ── Per-row toggle ────────────────────────────────────────────────────────
     @action(detail=True, methods=["post"])
     def toggle_active(self, request, pk=None):
         user = self.get_object()
         user.is_active = not user.is_active
         user.save(update_fields=["is_active"])
         return Response({"is_active": user.is_active})
+ 
+    # ── Bulk delete ───────────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    @transaction.atomic
+    def bulk_delete(self, request):
+        ids = request.data.get("examiner_ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "examiner_ids must be a non-empty list"}, status=400
+            )
+        count, _ = User.objects.filter(id__in=ids, role="examiner").delete()
+        if count == 0:
+            return Response(
+                {"error": "No examiners found with the provided IDs"}, status=404
+            )
+        return Response(
+            {
+                "success": True,
+                "deleted_count": count,
+                "message": f"Successfully deleted {count} examiner(s)",
+            }
+        )
+ 
+    # ── Bulk toggle active ────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="bulk-toggle-active")
+    @transaction.atomic
+    def bulk_toggle_active(self, request):
+        ids = request.data.get("examiner_ids", [])
+        is_active = request.data.get("is_active")
+ 
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "examiner_ids must be a non-empty list"}, status=400
+            )
+        if is_active is None:
+            return Response(
+                {"error": "is_active (true/false) is required"}, status=400
+            )
+ 
+        count = User.objects.filter(id__in=ids, role="examiner").update(
+            is_active=bool(is_active)
+        )
+        action_word = "activated" if is_active else "deactivated"
+        return Response(
+            {
+                "success": True,
+                "updated_count": count,
+                "message": f"Successfully {action_word} {count} examiner(s)",
+            }
+        )
+ 
+    # ── Import ────────────────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_examiners(self, request):
+        if "file" not in request.FILES:
+            return Response({"error": "No file provided"}, status=400)
+ 
+        file = request.FILES["file"]
+        ext = file.name.rsplit(".", 1)[-1].lower()
+        if ext not in ("csv", "xlsx", "xls"):
+            return Response(
+                {"error": "Invalid file format. Use CSV or Excel."}, status=400
+            )
+        try:
+            if ext == "csv":
+                decoded = file.read().decode("utf-8").splitlines()
+                rows = list(csv.DictReader(decoded))
+            else:
+                wb = load_workbook(file)
+                ws = wb.active
+                headers = [cell.value for cell in ws[1]]
+                rows = [
+                    dict(zip(headers, row))
+                    for row in ws.iter_rows(min_row=2, values_only=True)
+                    if any(row)
+                ]
+            return self._process_import(rows)
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
+ 
+    @transaction.atomic
+    def _process_import(self, rows):
+        created = updated = errors = 0
+        error_details = []
+        success_details = []
+ 
+        for row_num, row in enumerate(rows, start=2):
+            try:
+                username = str(row.get("Username") or "").strip()
+                first_name = str(row.get("First Name") or "").strip()
+                last_name = str(row.get("Last Name") or "").strip()
+                email = str(row.get("Email") or "").strip()
+                password = str(row.get("Password") or "").strip()
+                status_raw = str(row.get("Status") or "Yes").strip().lower()
+                is_active = status_raw in ("yes", "true", "1", "active")
+ 
+                if not username:
+                    error_details.append(
+                        f"Row {row_num}: Username is required"
+                    )
+                    errors += 1
+                    continue
+ 
+                # Check for duplicate username in other roles
+                conflict = User.objects.filter(username=username).exclude(
+                    role="examiner"
+                ).first()
+                if conflict:
+                    error_details.append(
+                        f"Row {row_num}: Username '{username}' already exists "
+                        f"as a {conflict.role}"
+                    )
+                    errors += 1
+                    continue
+ 
+                existing = User.objects.filter(
+                    username=username, role="examiner"
+                ).first()
+ 
+                if existing:
+                    # Update existing examiner (don't overwrite password unless provided)
+                    existing.first_name = first_name or existing.first_name
+                    existing.last_name = last_name or existing.last_name
+                    existing.email = email or existing.email
+                    existing.is_active = is_active
+                    if password:
+                        existing.set_password(password)
+                    existing.save()
+                    updated += 1
+                else:
+                    # Create new examiner
+                    effective_password = password or self.DEFAULT_IMPORT_PASSWORD
+                    User.objects.create_user(
+                        username=username,
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        password=effective_password,
+                        role="examiner",
+                        is_active=is_active,
+                    )
+                    created += 1
+                    full = f"{first_name} {last_name}".strip() or username
+                    success_details.append(
+                        f"{full} (@{username})"
+                        + ("" if password else " — default password assigned")
+                    )
+ 
+            except Exception as e:
+                error_details.append(f"Row {row_num}: {e}")
+                errors += 1
+ 
+        return Response(
+            {
+                "success": True,
+                "created": created,
+                "updated": updated,
+                "errors": errors,
+                "error_details": error_details[:20],
+                "success_details": success_details[:20],
+            }
+        )
+ 
+    # ── Download import template ──────────────────────────────────────────────
+    @action(detail=False, methods=["get"], url_path="template")
+    def download_template(self, request):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Examiners Template"
+ 
+        headers = ["Username", "First Name", "Last Name", "Email", "Password", "Status"]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
+ 
+        # Example rows
+        ws.append(["jdoe", "John", "Doe", "jdoe@hospital.org", "SecurePass1!", "Yes"])
+        ws.append(["asmith", "Alice", "Smith", "asmith@hospital.org", "", "Yes"])
+ 
+        ws_inst = wb.create_sheet("Instructions")
+        for row in [
+            ["Import Instructions"],
+            [""],
+            ["Required columns:"],
+            ["  Username (required), First Name, Last Name, Email, Password, Status"],
+            [""],
+            ["Notes:"],
+            ["  - Username must be unique across all users."],
+            ["  - Password is optional. If left blank, a default password is assigned."],
+            ["  - Status accepts: Yes / No (defaults to Yes / Active)."],
+            ["  - Existing examiners with the same username will be updated."],
+        ]:
+            ws_inst.append(row)
+ 
+        for col in ws.columns:
+            width = max((len(str(c.value)) for c in col if c.value), default=12)
+            ws.column_dimensions[col[0].column_letter].width = min(width + 4, 40)
+ 
+        response = HttpResponse(
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        )
+        response["Content-Disposition"] = (
+            'attachment; filename="examiners_import_template.xlsx"'
+        )
+        wb.save(response)
+        return response
 
 
 # ─────────────────────────────────────────────
