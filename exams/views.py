@@ -414,6 +414,74 @@ class ProcedureByProgramView(ListAPIView):
         return context
 
 
+# class ProcedureDetailView(RetrieveAPIView):
+#     permission_classes = [IsAuthenticated, IsExaminer]
+#     queryset = Procedure.objects.prefetch_related("steps")
+#     serializer_class = ProcedureDetailSerializer
+
+#     def retrieve(self, request, *args, **kwargs):
+#         student_id = self.kwargs.get("student_id")
+#         procedure = self.get_object()
+
+#         sp, _ = StudentProcedure.objects.select_related(
+#             "examiner_a", "examiner_b", "assigned_reconciler"
+#         ).get_or_create(
+#             student_id=student_id,
+#             procedure=procedure,
+#             defaults={
+#                 "examiner_a": None,  # No assignment on open — deferred to first score save
+#                 "examiner_b": None,
+#             },
+#         )
+
+#         both_slots_filled = (
+#             sp.examiner_a is not None
+#             and sp.examiner_b is not None
+#             and sp.examiner_a != sp.examiner_b
+#         )
+#         is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
+
+#         # Block non-assigned examiners from viewing scored or reconciled procedures
+#         if sp.status in ("scored", "reconciled") and not is_assigned:
+#             return Response(
+#                 {
+#                     "detail": "This procedure has been scored and is no longer accessible.",
+#                     "is_locked": True,
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # Block non-assigned examiners once both slots are claimed
+#         if both_slots_filled and not is_assigned:
+#             return Response(
+#                 {
+#                     "detail": "You are not assigned as an examiner for this procedure.",
+#                     "examiner_a": sp.examiner_a.get_full_name(),
+#                     "examiner_b": sp.examiner_b.get_full_name(),
+#                     "is_locked": sp.assigned_reconciler is not None,
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # Block further scoring once a reconciler is assigned
+#         if sp.assigned_reconciler and sp.status != "reconciled":
+#             return Response(
+#                 {
+#                     "detail": "This procedure is locked. A reconciler has been assigned.",
+#                     "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
+#                     "is_locked": True,
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         return super().retrieve(request, *args, **kwargs)
+
+#     def get_serializer_context(self):
+#         context = super().get_serializer_context()
+#         context["student_id"] = self.kwargs.get("student_id")
+#         return context
+
+
 class ProcedureDetailView(RetrieveAPIView):
     permission_classes = [IsAuthenticated, IsExaminer]
     queryset = Procedure.objects.prefetch_related("steps")
@@ -423,68 +491,194 @@ class ProcedureDetailView(RetrieveAPIView):
         student_id = self.kwargs.get("student_id")
         procedure = self.get_object()
 
-        sp, _ = StudentProcedure.objects.select_related(
-            "examiner_a", "examiner_b", "assigned_reconciler"
-        ).get_or_create(
-            student_id=student_id,
-            procedure=procedure,
-            defaults={
-                "examiner_a": None,  # No assignment on open — deferred to first score save
-                "examiner_b": None,
-            },
+        # Only look up an existing SP — never create one on page open.
+        # A StudentProcedure is created only when the first score is saved.
+        sp = (
+            StudentProcedure.objects.select_related(
+                "examiner_a", "examiner_b", "assigned_reconciler"
+            )
+            .filter(student_id=student_id, procedure=procedure)
+            .first()
         )
 
-        both_slots_filled = (
-            sp.examiner_a is not None
-            and sp.examiner_b is not None
-            and sp.examiner_a != sp.examiner_b
-        )
-        is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
-
-        # Block non-assigned examiners from viewing scored or reconciled procedures
-        if sp.status in ("scored", "reconciled") and not is_assigned:
-            return Response(
-                {
-                    "detail": "This procedure has been scored and is no longer accessible.",
-                    "is_locked": True,
-                },
-                status=status.HTTP_403_FORBIDDEN,
+        if sp:
+            both_slots_filled = (
+                sp.examiner_a is not None
+                and sp.examiner_b is not None
+                and sp.examiner_a != sp.examiner_b
             )
+            is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
 
-        # Block non-assigned examiners once both slots are claimed
-        if both_slots_filled and not is_assigned:
-            return Response(
-                {
-                    "detail": "You are not assigned as an examiner for this procedure.",
-                    "examiner_a": sp.examiner_a.get_full_name(),
-                    "examiner_b": sp.examiner_b.get_full_name(),
-                    "is_locked": sp.assigned_reconciler is not None,
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            # Block non-assigned examiners from viewing scored or reconciled procedures
+            if sp.status in ("scored", "reconciled") and not is_assigned:
+                return Response(
+                    {
+                        "detail": "This procedure has been scored and is no longer accessible.",
+                        "is_locked": True,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        # Block further scoring once a reconciler is assigned
-        if sp.assigned_reconciler and sp.status != "reconciled":
-            return Response(
-                {
-                    "detail": "This procedure is locked. A reconciler has been assigned.",
-                    "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
-                    "is_locked": True,
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            # Block non-assigned examiners once both slots are claimed
+            if both_slots_filled and not is_assigned:
+                return Response(
+                    {
+                        "detail": "You are not assigned as an examiner for this procedure.",
+                        "examiner_a": sp.examiner_a.get_full_name(),
+                        "examiner_b": sp.examiner_b.get_full_name(),
+                        "is_locked": sp.assigned_reconciler is not None,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Block further scoring once a reconciler is assigned
+            if sp.assigned_reconciler and sp.status != "reconciled":
+                return Response(
+                    {
+                        "detail": "This procedure is locked. A reconciler has been assigned.",
+                        "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
+                        "is_locked": True,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # Cache sp so get_serializer_context can inject it without a second query
+        self._fetched_sp = sp
 
         return super().retrieve(request, *args, **kwargs)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["student_id"] = self.kwargs.get("student_id")
+        # Inject the pre-fetched sp so the serializer doesn't re-query (avoids N+1)
+        sp = getattr(self, "_fetched_sp", None)
+        procedure_id = self.kwargs.get("pk")
+        context["student_procedures_map"] = {int(procedure_id): sp} if sp else {}
         return context
 
 
 # ─────────────────────────────────────────────
 # AUTOSAVE SCORE (EF)
 # ─────────────────────────────────────────────
+
+
+# class AutosaveStepScoreView(APIView):
+#     permission_classes = [IsAuthenticated, IsExaminer]
+
+#     @transaction.atomic
+#     def post(self, request, *args, **kwargs):
+#         data = request.data
+#         student_procedure_id = data.get("student_procedure")
+#         step_id = data.get("step")
+#         score = data.get("score")
+
+#         if not all([student_procedure_id, step_id, score is not None]):
+#             return Response(
+#                 {"detail": "student_procedure, step, and score are required."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         try:
+#             sp = (
+#                 StudentProcedure.objects.select_related(
+#                     "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+#                 )
+#                 .select_for_update()
+#                 .get(id=student_procedure_id)
+#             )
+#             step = ProcedureStep.objects.get(id=step_id, procedure=sp.procedure)
+#         except StudentProcedure.DoesNotExist:
+#             return Response({"detail": "StudentProcedure not found."}, status=404)
+#         except ProcedureStep.DoesNotExist:
+#             return Response({"detail": "ProcedureStep not found."}, status=404)
+
+#         # if request.user not in (sp.examiner_a, sp.examiner_b):
+#         #     return Response(
+#         #         {"detail": "You are not authorized to score this procedure."},
+#         #         status=status.HTTP_403_FORBIDDEN,
+#         #     )
+
+#         if request.user not in (sp.examiner_a, sp.examiner_b):
+#             # Slot A is still open — claim it now on first score save
+#             if sp.examiner_a is None:
+#                 sp.examiner_a = request.user
+#                 sp.save(update_fields=["examiner_a"])
+#             # Slot B is still open — claim it now on first score save
+#             elif sp.examiner_b is None or sp.examiner_a == sp.examiner_b:
+#                 sp.examiner_b = request.user
+#                 sp.save(update_fields=["examiner_b"])
+#             # Both slots genuinely taken — deny
+#             else:
+#                 return Response(
+#                     {"detail": "You are not authorized to score this procedure."},
+#                     status=status.HTTP_403_FORBIDDEN,
+#                 )
+
+#         if sp.assigned_reconciler:
+#             return Response(
+#                 {"detail": "Cannot modify scores. Reconciler has been assigned."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+#         if sp.status == "reconciled":
+#             return Response(
+#                 {"detail": "Cannot modify scores. Procedure has been reconciled."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         step_score, created = ProcedureStepScore.objects.update_or_create(
+#             student_procedure=sp,
+#             step=step,
+#             examiner=request.user,
+#             defaults={"score": score},
+#         )
+
+#         examiner_a_complete = False
+#         examiner_b_complete = False
+
+#         # if sp.examiner_a != sp.examiner_b:
+#         #     total_steps = sp.procedure.steps.count()
+#         #     score_map = {
+#         #         s["examiner"]: s["c"]
+#         #         for s in sp.step_scores.values("examiner").annotate(c=Count("id"))
+#         #     }
+#         #     examiner_a_complete = score_map.get(sp.examiner_a_id, 0) == total_steps
+#         #     examiner_b_complete = score_map.get(sp.examiner_b_id, 0) == total_steps
+
+#         #     if examiner_a_complete and examiner_b_complete and sp.status == "pending":
+#         #         sp.status = "scored"
+#         #         sp.save(update_fields=["status"])
+
+#         both_assigned = (
+#             sp.examiner_a is not None
+#             and sp.examiner_b is not None
+#             and sp.examiner_a != sp.examiner_b
+#         )
+#         if both_assigned:
+#             total_steps = sp.procedure.steps.count()
+#             score_map = {
+#                 s["examiner"]: s["c"]
+#                 for s in sp.step_scores.values("examiner").annotate(c=Count("id"))
+#             }
+#             examiner_a_complete = score_map.get(sp.examiner_a_id, 0) == total_steps
+#             examiner_b_complete = score_map.get(sp.examiner_b_id, 0) == total_steps
+
+#             if examiner_a_complete and examiner_b_complete and sp.status == "pending":
+#                 sp.status = "scored"
+#                 sp.save(update_fields=["status"])
+
+#         return Response(
+#             {
+#                 "step": step.id,
+#                 "score": step_score.score,
+#                 "created": created,
+#                 "status": sp.status,
+#                 "examiner_a_complete": examiner_a_complete,
+#                 "examiner_b_complete": examiner_b_complete,
+#                 "both_examiners_assigned": both_assigned,
+#                 "is_locked": sp.assigned_reconciler is not None,
+#             },
+#             status=status.HTTP_200_OK,
+#         )
 
 
 class AutosaveStepScoreView(APIView):
@@ -494,23 +688,55 @@ class AutosaveStepScoreView(APIView):
     def post(self, request, *args, **kwargs):
         data = request.data
         student_procedure_id = data.get("student_procedure")
+        student_id = data.get("student_id")
+        procedure_id = data.get("procedure_id")
         step_id = data.get("step")
         score = data.get("score")
 
-        if not all([student_procedure_id, step_id, score is not None]):
+        if not step_id or score is None:
             return Response(
-                {"detail": "student_procedure, step, and score are required."},
+                {"detail": "step and score are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not student_procedure_id and not (student_id and procedure_id):
+            return Response(
+                {
+                    "detail": (
+                        "Provide either student_procedure (existing record) "
+                        "or both student_id and procedure_id (first score)."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
-            sp = (
-                StudentProcedure.objects.select_related(
-                    "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+            if student_procedure_id:
+                # Subsequent score saves — SP already exists
+                sp = (
+                    StudentProcedure.objects.select_related(
+                        "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+                    )
+                    .select_for_update()
+                    .get(id=student_procedure_id)
                 )
-                .select_for_update()
-                .get(id=student_procedure_id)
-            )
+            else:
+                # First score for this student+procedure — create the SP now.
+                # This is the only place a StudentProcedure should ever be created.
+                sp, _ = StudentProcedure.objects.get_or_create(
+                    student_id=student_id,
+                    procedure_id=procedure_id,
+                    defaults={"examiner_a": None, "examiner_b": None},
+                )
+                # Re-fetch with select_for_update + select_related
+                sp = (
+                    StudentProcedure.objects.select_related(
+                        "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+                    )
+                    .select_for_update()
+                    .get(id=sp.id)
+                )
+
             step = ProcedureStep.objects.get(id=step_id, procedure=sp.procedure)
         except StudentProcedure.DoesNotExist:
             return Response({"detail": "StudentProcedure not found."}, status=404)
@@ -593,6 +819,7 @@ class AutosaveStepScoreView(APIView):
 
         return Response(
             {
+                "student_procedure": sp.id,  # Always returned so frontend can cache it
                 "step": step.id,
                 "score": step_score.score,
                 "created": created,
@@ -604,6 +831,7 @@ class AutosaveStepScoreView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
 
 
 # ─────────────────────────────────────────────
