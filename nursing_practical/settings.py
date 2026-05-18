@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY
 # ─────────────────────────────────────────────
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+APPEND_SLASH = False
 DEBUG = True  # os.getenv("DEBUG", "False").strip().lower() == "True"
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
