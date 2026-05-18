@@ -61,6 +61,7 @@ from .serializers import (
     UserSerializer,
 )
 
+
 # ─────────────────────────────────────────────
 # PAGINATION CLASSES
 # ─────────────────────────────────────────────
@@ -76,6 +77,12 @@ class GradesPagination(PageNumberPagination):
     page_size = 50
     page_size_query_param = "page_size"
     max_page_size = 500
+
+
+class ProcedurePagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 5000
 
 
 # ─────────────────────────────────────────────
@@ -107,6 +114,10 @@ class SiteSettingsView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+# ===============================================
+# GENERAL VIEWS
+# ===============================================
+
 # ─────────────────────────────────────────────
 # PROGRAM VIEWS
 # ─────────────────────────────────────────────
@@ -121,6 +132,7 @@ class ProgramListView(ListAPIView):
 class ProgramViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsAdmin]
     serializer_class = ProgramSerializer
+
     def get_queryset(self):
         return Program.objects.annotate(
             student_count=Count("students", distinct=True),
@@ -145,8 +157,12 @@ class LevelDetailView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
 
+# ===============================================
+# EAMINER FACING VIEWS
+# ===============================================
+
 # ─────────────────────────────────────────────
-# STUDENT VIEWS (Examiner-facing)
+# STUDENT VIEWS (EF)
 # ─────────────────────────────────────────────
 
 
@@ -177,33 +193,293 @@ class StudentDetailView(RetrieveAPIView):
 
 
 # ─────────────────────────────────────────────
-# PROCEDURE VIEWS (Examiner-facing)
+# CARE PLAN (EF)
 # ─────────────────────────────────────────────
+
+
+class CarePlanView(APIView):
+    """
+    GET  – return existing care plan or {exists: False}
+    POST – submit (or rescore, depending on the care_plan_lock_on_submit flag)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, student_id, program_id):
+        try:
+            care_plan = CarePlan.objects.select_related("examiner").get(
+                student_id=student_id,
+                program_id=program_id,
+            )
+            return Response(CarePlanSerializer(care_plan).data)
+        except CarePlan.DoesNotExist:
+            return Response(
+                {"exists": False, "message": "No care plan found for this student"},
+                status=status.HTTP_200_OK,
+            )
+
+    @transaction.atomic
+    def post(self, request, student_id, program_id):
+        site_settings = SiteSettings.get()
+        lock_on_submit = site_settings.care_plan_lock_on_submit
+
+        existing = CarePlan.objects.filter(
+            student_id=student_id,
+            program_id=program_id,
+        ).first()
+
+        if existing:
+            if lock_on_submit:
+                # Flag is ON (default) – prevent rescoring
+                return Response(
+                    {"error": "Care plan already submitted for this student"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            else:
+                # Flag is OFF – allow rescoring: update in-place
+                score = request.data.get("score")
+                comments = request.data.get("comments", existing.comments)
+
+                if score is None:
+                    return Response(
+                        {"error": "score is required"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                score_int = int(score)
+                if not (0 <= score_int <= 20):
+                    return Response(
+                        {"error": "Score must be between 0 and 20"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                existing.score = score_int
+                existing.comments = comments
+                existing.examiner = request.user  # track who rescored
+                existing.is_locked = False  # stays unlocked
+                existing.save(
+                    update_fields=["score", "comments", "examiner", "is_locked"]
+                )
+                return Response(
+                    CarePlanSerializer(existing).data, status=status.HTTP_200_OK
+                )
+
+        # No existing care plan — create it
+        data = request.data.copy()
+        data["student"] = student_id
+        data["program"] = program_id
+
+        serializer = CarePlanCreateSerializer(data=data)
+        if serializer.is_valid():
+            care_plan = serializer.save(
+                examiner=request.user,
+                is_locked=lock_on_submit,  # lock only when flag is ON
+            )
+            return Response(
+                CarePlanSerializer(care_plan).data,
+                status=status.HTTP_201_CREATED,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# Note: The original version of CarePlanView (below) was a simple create-once endpoint that locked the care plan after submission.
+# The new version (above) adds support for optional rescoring based on a site setting, allowing updates to the care plan score and comments if the lock_on_submit flag is turned off.
+# The original version is kept here for reference and potential rollback if needed.
+
+# class CarePlanView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, student_id, program_id):
+#         try:
+#             care_plan = CarePlan.objects.select_related("student", "examiner").get(
+#                 student_id=student_id, program_id=program_id
+#             )
+#             return Response(CarePlanSerializer(care_plan).data)
+#         except CarePlan.DoesNotExist:
+#             return Response({"exists": False, "message": "No care plan found"}, status=200)
+
+#     @transaction.atomic
+#     def post(self, request, student_id, program_id):
+#         if CarePlan.objects.filter(student_id=student_id, program_id=program_id).exists():
+#             return Response(
+#                 {"error": "Care plan already submitted for this student"},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+#         data = {**request.data, "student": student_id, "program": program_id}
+#         serializer = CarePlanCreateSerializer(data=data)
+#         if serializer.is_valid():
+#             care_plan = serializer.save(examiner=request.user, is_locked=True)
+#             return Response(CarePlanSerializer(care_plan).data, status=201)
+#         return Response(serializer.errors, status=400)
+
+
+# ─────────────────────────────────────────────
+# ASSIGN EXAMINERS (EF)
+# ─────────────────────────────────────────────
+
+
+class AssignExaminersView(APIView):
+    permission_classes = [IsAuthenticated, IsExaminer]
+
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        required = ["student_id", "procedure_id", "examiner_a_id", "examiner_b_id"]
+        if not all(data.get(f) for f in required):
+            return Response({"detail": "All fields are required."}, status=400)
+        try:
+            student = Student.objects.get(id=data["student_id"])
+            procedure = Procedure.objects.get(id=data["procedure_id"])
+            examiner_a = User.objects.get(id=data["examiner_a_id"], role="examiner")
+            examiner_b = User.objects.get(id=data["examiner_b_id"], role="examiner")
+        except (Student.DoesNotExist, Procedure.DoesNotExist, User.DoesNotExist) as e:
+            return Response({"detail": f"Invalid reference: {e}"}, status=400)
+        sp, created = StudentProcedure.objects.update_or_create(
+            student=student,
+            procedure=procedure,
+            defaults={"examiner_a": examiner_a, "examiner_b": examiner_b},
+        )
+        return Response(
+            {
+                "id": sp.id,
+                "created": created,
+                "examiner_a": examiner_a.get_full_name(),
+                "examiner_b": examiner_b.get_full_name(),
+            }
+        )
+
+
+# ─────────────────────────────────────────────
+# PROCEDURE VIEWS (EF)
+# ─────────────────────────────────────────────
+
+
+# class ProcedureByProgramView(ListAPIView):
+#     permission_classes = [IsAuthenticated, IsExaminer | IsAdmin]
+#     serializer_class = ProcedureListSerializer
+#     def get_queryset(self):
+#         return Procedure.objects.filter(program_id=self.kwargs["program_id"]).annotate(
+#             step_count=Count("steps")
+#         )
+
+#     def get_serializer_context(self):
+#         context = super().get_serializer_context()
+#         student_id = self.request.query_params.get("student_id")
+#         context["student_id"] = student_id
+
+#         # Pre-fetch all StudentProcedures for this student/program in ONE query
+#         # and pass a lookup map to the serializer – eliminates N+1
+#         if student_id:
+#             sps = StudentProcedure.objects.filter(
+#                 student_id=student_id,
+#                 procedure__program_id=self.kwargs["program_id"],
+#             ).select_related("examiner_a", "examiner_b", "assigned_reconciler")
+#             context["student_procedures_map"] = {sp.procedure_id: sp for sp in sps}
+#         return context
 
 
 class ProcedureByProgramView(ListAPIView):
     permission_classes = [IsAuthenticated, IsExaminer | IsAdmin]
+    pagination_class = ProcedurePagination
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = ["name"]
     serializer_class = ProcedureListSerializer
 
     def get_queryset(self):
-        return Procedure.objects.filter(program_id=self.kwargs["program_id"]).annotate(
-            step_count=Count("steps")
+        return (
+            Procedure.objects.filter(program_id=self.kwargs["program_id"])
+            .annotate(step_count=Count("steps"))
+            .order_by("pk")
         )
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
+
         student_id = self.request.query_params.get("student_id")
+
+        try:
+            student_id = int(student_id) if student_id else None
+        except (TypeError, ValueError):
+            student_id = None
+
         context["student_id"] = student_id
 
-        # Pre-fetch all StudentProcedures for this student/program in ONE query
-        # and pass a lookup map to the serializer – eliminates N+1
         if student_id:
             sps = StudentProcedure.objects.filter(
                 student_id=student_id,
                 procedure__program_id=self.kwargs["program_id"],
             ).select_related("examiner_a", "examiner_b", "assigned_reconciler")
+
             context["student_procedures_map"] = {sp.procedure_id: sp for sp in sps}
+
         return context
+
+
+# class ProcedureDetailView(RetrieveAPIView):
+#     permission_classes = [IsAuthenticated, IsExaminer]
+#     queryset = Procedure.objects.prefetch_related("steps")
+#     serializer_class = ProcedureDetailSerializer
+
+#     def retrieve(self, request, *args, **kwargs):
+#         student_id = self.kwargs.get("student_id")
+#         procedure = self.get_object()
+
+#         sp, _ = StudentProcedure.objects.select_related(
+#             "examiner_a", "examiner_b", "assigned_reconciler"
+#         ).get_or_create(
+#             student_id=student_id,
+#             procedure=procedure,
+#             defaults={
+#                 "examiner_a": None,  # No assignment on open — deferred to first score save
+#                 "examiner_b": None,
+#             },
+#         )
+
+#         both_slots_filled = (
+#             sp.examiner_a is not None
+#             and sp.examiner_b is not None
+#             and sp.examiner_a != sp.examiner_b
+#         )
+#         is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
+
+#         # Block non-assigned examiners from viewing scored or reconciled procedures
+#         if sp.status in ("scored", "reconciled") and not is_assigned:
+#             return Response(
+#                 {
+#                     "detail": "This procedure has been scored and is no longer accessible.",
+#                     "is_locked": True,
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # Block non-assigned examiners once both slots are claimed
+#         if both_slots_filled and not is_assigned:
+#             return Response(
+#                 {
+#                     "detail": "You are not assigned as an examiner for this procedure.",
+#                     "examiner_a": sp.examiner_a.get_full_name(),
+#                     "examiner_b": sp.examiner_b.get_full_name(),
+#                     "is_locked": sp.assigned_reconciler is not None,
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # Block further scoring once a reconciler is assigned
+#         if sp.assigned_reconciler and sp.status != "reconciled":
+#             return Response(
+#                 {
+#                     "detail": "This procedure is locked. A reconciler has been assigned.",
+#                     "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
+#                     "is_locked": True,
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         return super().retrieve(request, *args, **kwargs)
+
+#     def get_serializer_context(self):
+#         context = super().get_serializer_context()
+#         context["student_id"] = self.kwargs.get("student_id")
+#         return context
 
 
 class ProcedureDetailView(RetrieveAPIView):
@@ -211,125 +487,198 @@ class ProcedureDetailView(RetrieveAPIView):
     queryset = Procedure.objects.prefetch_related("steps")
     serializer_class = ProcedureDetailSerializer
 
-    # def retrieve(self, request, *args, **kwargs):
-    #     student_id = self.kwargs.get("student_id")
-    #     procedure = self.get_object()
-
-    #     sp, _ = StudentProcedure.objects.select_related(
-    #         "examiner_a", "examiner_b", "assigned_reconciler"
-    #     ).get_or_create(
-    #         student_id=student_id,
-    #         procedure=procedure,
-    #         defaults={
-    #             "examiner_a": request.user,
-    #             "examiner_b": request.user,
-    #         },
-    #     )
-
-    #     if sp.examiner_a == sp.examiner_b:
-    #         if sp.examiner_a != request.user:
-    #             sp.examiner_b = request.user
-    #             sp.save(update_fields=["examiner_b"])
-    #     elif request.user not in (sp.examiner_a, sp.examiner_b):
-    #         total_steps = sp.procedure.steps.count()
-    #         score_counts = (
-    #             sp.step_scores
-    #             .values("examiner")
-    #             .annotate(c=Count("id"))
-    #         )
-    #         score_map = {s["examiner"]: s["c"] for s in score_counts}
-    #         both_scored = (
-    #             score_map.get(sp.examiner_a_id, 0) == total_steps and
-    #             score_map.get(sp.examiner_b_id, 0) == total_steps
-    #         )
-    #         return Response(
-    #             {
-    #                 "detail": "You are not assigned as an examiner for this procedure.",
-    #                 "examiner_a": sp.examiner_a.get_full_name(),
-    #                 "examiner_b": sp.examiner_b.get_full_name(),
-    #                 "is_locked": both_scored or sp.assigned_reconciler is not None,
-    #             },
-    #             status=status.HTTP_403_FORBIDDEN,
-    #         )
-
-    #     if sp.assigned_reconciler and sp.status != "reconciled":
-    #         return Response(
-    #             {
-    #                 "detail": "This procedure is locked. A reconciler has been assigned.",
-    #                 "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
-    #                 "is_locked": True,
-    #             },
-    #             status=status.HTTP_403_FORBIDDEN,
-    #         )
-
-    #     return super().retrieve(request, *args, **kwargs)
-
     def retrieve(self, request, *args, **kwargs):
         student_id = self.kwargs.get("student_id")
         procedure = self.get_object()
 
-        sp, _ = StudentProcedure.objects.select_related(
-            "examiner_a", "examiner_b", "assigned_reconciler"
-        ).get_or_create(
-            student_id=student_id,
-            procedure=procedure,
-            defaults={
-                "examiner_a": None,  # No assignment on open — deferred to first score save
-                "examiner_b": None,
-            },
+        # Only look up an existing SP — never create one on page open.
+        # A StudentProcedure is created only when the first score is saved.
+        sp = (
+            StudentProcedure.objects.select_related(
+                "examiner_a", "examiner_b", "assigned_reconciler"
+            )
+            .filter(student_id=student_id, procedure=procedure)
+            .first()
         )
 
-        both_slots_filled = (
-            sp.examiner_a is not None
-            and sp.examiner_b is not None
-            and sp.examiner_a != sp.examiner_b
-        )
-        is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
-
-        # Block non-assigned examiners from viewing scored or reconciled procedures
-        if sp.status in ("scored", "reconciled") and not is_assigned:
-            return Response(
-                {
-                    "detail": "This procedure has been scored and is no longer accessible.",
-                    "is_locked": True,
-                },
-                status=status.HTTP_403_FORBIDDEN,
+        if sp:
+            both_slots_filled = (
+                sp.examiner_a is not None
+                and sp.examiner_b is not None
+                and sp.examiner_a != sp.examiner_b
             )
+            is_assigned = request.user in (sp.examiner_a, sp.examiner_b)
 
-        # Block non-assigned examiners once both slots are claimed
-        if both_slots_filled and not is_assigned:
-            return Response(
-                {
-                    "detail": "You are not assigned as an examiner for this procedure.",
-                    "examiner_a": sp.examiner_a.get_full_name(),
-                    "examiner_b": sp.examiner_b.get_full_name(),
-                    "is_locked": sp.assigned_reconciler is not None,
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            # Block non-assigned examiners from viewing scored or reconciled procedures
+            if sp.status in ("scored", "reconciled") and not is_assigned:
+                return Response(
+                    {
+                        "detail": "This procedure has been scored and is no longer accessible.",
+                        "is_locked": True,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        # Block further scoring once a reconciler is assigned
-        if sp.assigned_reconciler and sp.status != "reconciled":
-            return Response(
-                {
-                    "detail": "This procedure is locked. A reconciler has been assigned.",
-                    "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
-                    "is_locked": True,
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            # Block non-assigned examiners once both slots are claimed
+            if both_slots_filled and not is_assigned:
+                return Response(
+                    {
+                        "detail": "You are not assigned as an examiner for this procedure.",
+                        "examiner_a": sp.examiner_a.get_full_name(),
+                        "examiner_b": sp.examiner_b.get_full_name(),
+                        "is_locked": sp.assigned_reconciler is not None,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Block further scoring once a reconciler is assigned
+            if sp.assigned_reconciler and sp.status != "reconciled":
+                return Response(
+                    {
+                        "detail": "This procedure is locked. A reconciler has been assigned.",
+                        "assigned_reconciler": sp.assigned_reconciler.get_full_name(),
+                        "is_locked": True,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # Cache sp so get_serializer_context can inject it without a second query
+        self._fetched_sp = sp
 
         return super().retrieve(request, *args, **kwargs)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["student_id"] = self.kwargs.get("student_id")
+        # Inject the pre-fetched sp so the serializer doesn't re-query (avoids N+1)
+        sp = getattr(self, "_fetched_sp", None)
+        procedure_id = self.kwargs.get("pk")
+        context["student_procedures_map"] = {int(procedure_id): sp} if sp else {}
         return context
 
 
 # ─────────────────────────────────────────────
-# AUTOSAVE SCORE
+# AUTOSAVE SCORE (EF)
 # ─────────────────────────────────────────────
+
+
+# class AutosaveStepScoreView(APIView):
+#     permission_classes = [IsAuthenticated, IsExaminer]
+
+#     @transaction.atomic
+#     def post(self, request, *args, **kwargs):
+#         data = request.data
+#         student_procedure_id = data.get("student_procedure")
+#         step_id = data.get("step")
+#         score = data.get("score")
+
+#         if not all([student_procedure_id, step_id, score is not None]):
+#             return Response(
+#                 {"detail": "student_procedure, step, and score are required."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         try:
+#             sp = (
+#                 StudentProcedure.objects.select_related(
+#                     "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+#                 )
+#                 .select_for_update()
+#                 .get(id=student_procedure_id)
+#             )
+#             step = ProcedureStep.objects.get(id=step_id, procedure=sp.procedure)
+#         except StudentProcedure.DoesNotExist:
+#             return Response({"detail": "StudentProcedure not found."}, status=404)
+#         except ProcedureStep.DoesNotExist:
+#             return Response({"detail": "ProcedureStep not found."}, status=404)
+
+#         # if request.user not in (sp.examiner_a, sp.examiner_b):
+#         #     return Response(
+#         #         {"detail": "You are not authorized to score this procedure."},
+#         #         status=status.HTTP_403_FORBIDDEN,
+#         #     )
+
+#         if request.user not in (sp.examiner_a, sp.examiner_b):
+#             # Slot A is still open — claim it now on first score save
+#             if sp.examiner_a is None:
+#                 sp.examiner_a = request.user
+#                 sp.save(update_fields=["examiner_a"])
+#             # Slot B is still open — claim it now on first score save
+#             elif sp.examiner_b is None or sp.examiner_a == sp.examiner_b:
+#                 sp.examiner_b = request.user
+#                 sp.save(update_fields=["examiner_b"])
+#             # Both slots genuinely taken — deny
+#             else:
+#                 return Response(
+#                     {"detail": "You are not authorized to score this procedure."},
+#                     status=status.HTTP_403_FORBIDDEN,
+#                 )
+
+#         if sp.assigned_reconciler:
+#             return Response(
+#                 {"detail": "Cannot modify scores. Reconciler has been assigned."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+#         if sp.status == "reconciled":
+#             return Response(
+#                 {"detail": "Cannot modify scores. Procedure has been reconciled."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         step_score, created = ProcedureStepScore.objects.update_or_create(
+#             student_procedure=sp,
+#             step=step,
+#             examiner=request.user,
+#             defaults={"score": score},
+#         )
+
+#         examiner_a_complete = False
+#         examiner_b_complete = False
+
+#         # if sp.examiner_a != sp.examiner_b:
+#         #     total_steps = sp.procedure.steps.count()
+#         #     score_map = {
+#         #         s["examiner"]: s["c"]
+#         #         for s in sp.step_scores.values("examiner").annotate(c=Count("id"))
+#         #     }
+#         #     examiner_a_complete = score_map.get(sp.examiner_a_id, 0) == total_steps
+#         #     examiner_b_complete = score_map.get(sp.examiner_b_id, 0) == total_steps
+
+#         #     if examiner_a_complete and examiner_b_complete and sp.status == "pending":
+#         #         sp.status = "scored"
+#         #         sp.save(update_fields=["status"])
+
+#         both_assigned = (
+#             sp.examiner_a is not None
+#             and sp.examiner_b is not None
+#             and sp.examiner_a != sp.examiner_b
+#         )
+#         if both_assigned:
+#             total_steps = sp.procedure.steps.count()
+#             score_map = {
+#                 s["examiner"]: s["c"]
+#                 for s in sp.step_scores.values("examiner").annotate(c=Count("id"))
+#             }
+#             examiner_a_complete = score_map.get(sp.examiner_a_id, 0) == total_steps
+#             examiner_b_complete = score_map.get(sp.examiner_b_id, 0) == total_steps
+
+#             if examiner_a_complete and examiner_b_complete and sp.status == "pending":
+#                 sp.status = "scored"
+#                 sp.save(update_fields=["status"])
+
+#         return Response(
+#             {
+#                 "step": step.id,
+#                 "score": step_score.score,
+#                 "created": created,
+#                 "status": sp.status,
+#                 "examiner_a_complete": examiner_a_complete,
+#                 "examiner_b_complete": examiner_b_complete,
+#                 "both_examiners_assigned": both_assigned,
+#                 "is_locked": sp.assigned_reconciler is not None,
+#             },
+#             status=status.HTTP_200_OK,
+#         )
 
 
 class AutosaveStepScoreView(APIView):
@@ -339,23 +688,55 @@ class AutosaveStepScoreView(APIView):
     def post(self, request, *args, **kwargs):
         data = request.data
         student_procedure_id = data.get("student_procedure")
+        student_id = data.get("student_id")
+        procedure_id = data.get("procedure_id")
         step_id = data.get("step")
         score = data.get("score")
 
-        if not all([student_procedure_id, step_id, score is not None]):
+        if not step_id or score is None:
             return Response(
-                {"detail": "student_procedure, step, and score are required."},
+                {"detail": "step and score are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not student_procedure_id and not (student_id and procedure_id):
+            return Response(
+                {
+                    "detail": (
+                        "Provide either student_procedure (existing record) "
+                        "or both student_id and procedure_id (first score)."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
-            sp = (
-                StudentProcedure.objects.select_related(
-                    "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+            if student_procedure_id:
+                # Subsequent score saves — SP already exists
+                sp = (
+                    StudentProcedure.objects.select_related(
+                        "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+                    )
+                    .select_for_update()
+                    .get(id=student_procedure_id)
                 )
-                .select_for_update()
-                .get(id=student_procedure_id)
-            )
+            else:
+                # First score for this student+procedure — create the SP now.
+                # This is the only place a StudentProcedure should ever be created.
+                sp, _ = StudentProcedure.objects.get_or_create(
+                    student_id=student_id,
+                    procedure_id=procedure_id,
+                    defaults={"examiner_a": None, "examiner_b": None},
+                )
+                # Re-fetch with select_for_update + select_related
+                sp = (
+                    StudentProcedure.objects.select_related(
+                        "examiner_a", "examiner_b", "assigned_reconciler", "procedure"
+                    )
+                    .select_for_update()
+                    .get(id=sp.id)
+                )
+
             step = ProcedureStep.objects.get(id=step_id, procedure=sp.procedure)
         except StudentProcedure.DoesNotExist:
             return Response({"detail": "StudentProcedure not found."}, status=404)
@@ -438,6 +819,7 @@ class AutosaveStepScoreView(APIView):
 
         return Response(
             {
+                "student_procedure": sp.id,  # Always returned so frontend can cache it
                 "step": step.id,
                 "score": step_score.score,
                 "created": created,
@@ -451,8 +833,9 @@ class AutosaveStepScoreView(APIView):
         )
 
 
+
 # ─────────────────────────────────────────────
-# RECONCILIATION
+# RECONCILIATION (EF)
 # ─────────────────────────────────────────────
 
 
@@ -595,6 +978,10 @@ class SaveReconciliationView(APIView):
         )
 
 
+# ===============================================
+# ADMIN FACING VIEWS
+# ===============================================
+
 # ─────────────────────────────────────────────
 # ADMIN: DASHBOARD
 # ─────────────────────────────────────────────
@@ -634,19 +1021,260 @@ class DashboardStatsView(APIView):
 # ─────────────────────────────────────────────
 
 
-class ExaminerViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.filter(role="examiner")
-    permission_classes = [IsAuthenticated, IsAdmin]
+# class ExaminerViewSet(viewsets.ModelViewSet):
+#     queryset = User.objects.filter(role="examiner")
+#     permission_classes = [IsAuthenticated, IsAdmin]
 
+#     def get_serializer_class(self):
+#         return UserCreateSerializer if self.action == "create" else UserSerializer
+
+#     @action(detail=True, methods=["post"])
+#     def toggle_active(self, request, pk=None):
+#         user = self.get_object()
+#         user.is_active = not user.is_active
+#         user.save(update_fields=["is_active"])
+#         return Response({"is_active": user.is_active})
+
+
+class ExaminerViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated, IsAdmin]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["username", "first_name", "last_name", "email"]
+    ordering_fields = ["username", "first_name", "date_joined", "is_active"]
+    ordering = ["username"]
+ 
+    DEFAULT_IMPORT_PASSWORD = "Change123!"
+ 
+    def get_queryset(self):
+        qs = User.objects.filter(role="examiner")
+        is_active = self.request.query_params.get("is_active")
+        if is_active == "true":
+            qs = qs.filter(is_active=True)
+        elif is_active == "false":
+            qs = qs.filter(is_active=False)
+        return qs
+ 
     def get_serializer_class(self):
         return UserCreateSerializer if self.action == "create" else UserSerializer
-
+ 
+    # ── Per-row toggle ────────────────────────────────────────────────────────
     @action(detail=True, methods=["post"])
     def toggle_active(self, request, pk=None):
         user = self.get_object()
         user.is_active = not user.is_active
         user.save(update_fields=["is_active"])
         return Response({"is_active": user.is_active})
+ 
+    # ── Bulk delete ───────────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    @transaction.atomic
+    def bulk_delete(self, request):
+        ids = request.data.get("examiner_ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "examiner_ids must be a non-empty list"}, status=400
+            )
+        count, _ = User.objects.filter(id__in=ids, role="examiner").delete()
+        if count == 0:
+            return Response(
+                {"error": "No examiners found with the provided IDs"}, status=404
+            )
+        return Response(
+            {
+                "success": True,
+                "deleted_count": count,
+                "message": f"Successfully deleted {count} examiner(s)",
+            }
+        )
+ 
+    # ── Bulk toggle active ────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="bulk-toggle-active")
+    @transaction.atomic
+    def bulk_toggle_active(self, request):
+        ids = request.data.get("examiner_ids", [])
+        is_active = request.data.get("is_active")
+ 
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "examiner_ids must be a non-empty list"}, status=400
+            )
+        if is_active is None:
+            return Response(
+                {"error": "is_active (true/false) is required"}, status=400
+            )
+ 
+        count = User.objects.filter(id__in=ids, role="examiner").update(
+            is_active=bool(is_active)
+        )
+        action_word = "activated" if is_active else "deactivated"
+        return Response(
+            {
+                "success": True,
+                "updated_count": count,
+                "message": f"Successfully {action_word} {count} examiner(s)",
+            }
+        )
+ 
+    # ── Import ────────────────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_examiners(self, request):
+        if "file" not in request.FILES:
+            return Response({"error": "No file provided"}, status=400)
+ 
+        file = request.FILES["file"]
+        ext = file.name.rsplit(".", 1)[-1].lower()
+        if ext not in ("csv", "xlsx", "xls"):
+            return Response(
+                {"error": "Invalid file format. Use CSV or Excel."}, status=400
+            )
+        try:
+            if ext == "csv":
+                decoded = file.read().decode("utf-8").splitlines()
+                rows = list(csv.DictReader(decoded))
+            else:
+                wb = load_workbook(file)
+                ws = wb.active
+                headers = [cell.value for cell in ws[1]]
+                rows = [
+                    dict(zip(headers, row))
+                    for row in ws.iter_rows(min_row=2, values_only=True)
+                    if any(row)
+                ]
+            return self._process_import(rows)
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
+ 
+    @transaction.atomic
+    def _process_import(self, rows):
+        created = updated = errors = 0
+        error_details = []
+        success_details = []
+ 
+        for row_num, row in enumerate(rows, start=2):
+            try:
+                username = str(row.get("Username") or "").strip()
+                first_name = str(row.get("First Name") or "").strip()
+                last_name = str(row.get("Last Name") or "").strip()
+                email = str(row.get("Email") or "").strip()
+                password = str(row.get("Password") or "").strip()
+                status_raw = str(row.get("Status") or "Yes").strip().lower()
+                is_active = status_raw in ("yes", "true", "1", "active")
+ 
+                if not username:
+                    error_details.append(
+                        f"Row {row_num}: Username is required"
+                    )
+                    errors += 1
+                    continue
+ 
+                # Check for duplicate username in other roles
+                conflict = User.objects.filter(username=username).exclude(
+                    role="examiner"
+                ).first()
+                if conflict:
+                    error_details.append(
+                        f"Row {row_num}: Username '{username}' already exists "
+                        f"as a {conflict.role}"
+                    )
+                    errors += 1
+                    continue
+ 
+                existing = User.objects.filter(
+                    username=username, role="examiner"
+                ).first()
+ 
+                if existing:
+                    # Update existing examiner (don't overwrite password unless provided)
+                    existing.first_name = first_name or existing.first_name
+                    existing.last_name = last_name or existing.last_name
+                    existing.email = email or existing.email
+                    existing.is_active = is_active
+                    if password:
+                        existing.set_password(password)
+                    existing.save()
+                    updated += 1
+                else:
+                    # Create new examiner
+                    effective_password = password or self.DEFAULT_IMPORT_PASSWORD
+                    User.objects.create_user(
+                        username=username,
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        password=effective_password,
+                        role="examiner",
+                        is_active=is_active,
+                    )
+                    created += 1
+                    full = f"{first_name} {last_name}".strip() or username
+                    success_details.append(
+                        f"{full} (@{username})"
+                        + ("" if password else " — default password assigned")
+                    )
+ 
+            except Exception as e:
+                error_details.append(f"Row {row_num}: {e}")
+                errors += 1
+ 
+        return Response(
+            {
+                "success": True,
+                "created": created,
+                "updated": updated,
+                "errors": errors,
+                "error_details": error_details[:20],
+                "success_details": success_details[:20],
+            }
+        )
+ 
+    # ── Download import template ──────────────────────────────────────────────
+    @action(detail=False, methods=["get"], url_path="template")
+    def download_template(self, request):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Examiners Template"
+ 
+        headers = ["Username", "First Name", "Last Name", "Email", "Password", "Status"]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
+ 
+        # Example rows
+        ws.append(["jdoe", "John", "Doe", "jdoe@hospital.org", "SecurePass1!", "Yes"])
+        ws.append(["asmith", "Alice", "Smith", "asmith@hospital.org", "", "Yes"])
+ 
+        ws_inst = wb.create_sheet("Instructions")
+        for row in [
+            ["Import Instructions"],
+            [""],
+            ["Required columns:"],
+            ["  Username (required), First Name, Last Name, Email, Password, Status"],
+            [""],
+            ["Notes:"],
+            ["  - Username must be unique across all users."],
+            ["  - Password is optional. If left blank, a default password is assigned."],
+            ["  - Status accepts: Yes / No (defaults to Yes / Active)."],
+            ["  - Existing examiners with the same username will be updated."],
+        ]:
+            ws_inst.append(row)
+ 
+        for col in ws.columns:
+            width = max((len(str(c.value)) for c in col if c.value), default=12)
+            ws.column_dimensions[col[0].column_letter].width = min(width + 4, 40)
+ 
+        response = HttpResponse(
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        )
+        response["Content-Disposition"] = (
+            'attachment; filename="examiners_import_template.xlsx"'
+        )
+        wb.save(response)
+        return response
 
 
 # ─────────────────────────────────────────────
@@ -967,12 +1595,6 @@ class BulkDeleteStudentsView(APIView):
 # ─────────────────────────────────────────────
 # ADMIN: PROCEDURES
 # ─────────────────────────────────────────────
-
-
-class ProcedurePagination(PageNumberPagination):
-    page_size = 100
-    page_size_query_param = "page_size"
-    max_page_size = 5000
 
 
 class ProcedureViewSet(viewsets.ModelViewSet):
@@ -1847,161 +2469,5 @@ class GradeStatsView(APIView):
                 "average_percentage": avg,
                 "grade_distribution": grade_distribution,
                 "care_plan_completed": complete_careplan,
-            }
-        )
-
-
-# ─────────────────────────────────────────────
-# CARE PLAN
-# ─────────────────────────────────────────────
-
-
-class CarePlanView(APIView):
-    """
-    GET  – return existing care plan or {exists: False}
-    POST – submit (or rescore, depending on the care_plan_lock_on_submit flag)
-    """
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, student_id, program_id):
-        try:
-            care_plan = CarePlan.objects.select_related("examiner").get(
-                student_id=student_id,
-                program_id=program_id,
-            )
-            return Response(CarePlanSerializer(care_plan).data)
-        except CarePlan.DoesNotExist:
-            return Response(
-                {"exists": False, "message": "No care plan found for this student"},
-                status=status.HTTP_200_OK,
-            )
-
-    @transaction.atomic
-    def post(self, request, student_id, program_id):
-        site_settings = SiteSettings.get()
-        lock_on_submit = site_settings.care_plan_lock_on_submit
-
-        existing = CarePlan.objects.filter(
-            student_id=student_id,
-            program_id=program_id,
-        ).first()
-
-        if existing:
-            if lock_on_submit:
-                # Flag is ON (default) – prevent rescoring
-                return Response(
-                    {"error": "Care plan already submitted for this student"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            else:
-                # Flag is OFF – allow rescoring: update in-place
-                score = request.data.get("score")
-                comments = request.data.get("comments", existing.comments)
-
-                if score is None:
-                    return Response(
-                        {"error": "score is required"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                score_int = int(score)
-                if not (0 <= score_int <= 20):
-                    return Response(
-                        {"error": "Score must be between 0 and 20"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                existing.score = score_int
-                existing.comments = comments
-                existing.examiner = request.user  # track who rescored
-                existing.is_locked = False  # stays unlocked
-                existing.save(
-                    update_fields=["score", "comments", "examiner", "is_locked"]
-                )
-                return Response(
-                    CarePlanSerializer(existing).data, status=status.HTTP_200_OK
-                )
-
-        # No existing care plan — create it
-        data = request.data.copy()
-        data["student"] = student_id
-        data["program"] = program_id
-
-        serializer = CarePlanCreateSerializer(data=data)
-        if serializer.is_valid():
-            care_plan = serializer.save(
-                examiner=request.user,
-                is_locked=lock_on_submit,  # lock only when flag is ON
-            )
-            return Response(
-                CarePlanSerializer(care_plan).data,
-                status=status.HTTP_201_CREATED,
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# Note: The original version of CarePlanView (below) was a simple create-once endpoint that locked the care plan after submission.
-# The new version (above) adds support for optional rescoring based on a site setting, allowing updates to the care plan score and comments if the lock_on_submit flag is turned off.
-# The original version is kept here for reference and potential rollback if needed.
-
-# class CarePlanView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request, student_id, program_id):
-#         try:
-#             care_plan = CarePlan.objects.select_related("student", "examiner").get(
-#                 student_id=student_id, program_id=program_id
-#             )
-#             return Response(CarePlanSerializer(care_plan).data)
-#         except CarePlan.DoesNotExist:
-#             return Response({"exists": False, "message": "No care plan found"}, status=200)
-
-#     @transaction.atomic
-#     def post(self, request, student_id, program_id):
-#         if CarePlan.objects.filter(student_id=student_id, program_id=program_id).exists():
-#             return Response(
-#                 {"error": "Care plan already submitted for this student"},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-#         data = {**request.data, "student": student_id, "program": program_id}
-#         serializer = CarePlanCreateSerializer(data=data)
-#         if serializer.is_valid():
-#             care_plan = serializer.save(examiner=request.user, is_locked=True)
-#             return Response(CarePlanSerializer(care_plan).data, status=201)
-#         return Response(serializer.errors, status=400)
-
-
-# ─────────────────────────────────────────────
-# ASSIGN EXAMINERS (kept for compatibility)
-# ─────────────────────────────────────────────
-
-
-class AssignExaminersView(APIView):
-    permission_classes = [IsAuthenticated, IsExaminer]
-
-    def post(self, request, *args, **kwargs):
-        data = request.data
-        required = ["student_id", "procedure_id", "examiner_a_id", "examiner_b_id"]
-        if not all(data.get(f) for f in required):
-            return Response({"detail": "All fields are required."}, status=400)
-        try:
-            student = Student.objects.get(id=data["student_id"])
-            procedure = Procedure.objects.get(id=data["procedure_id"])
-            examiner_a = User.objects.get(id=data["examiner_a_id"], role="examiner")
-            examiner_b = User.objects.get(id=data["examiner_b_id"], role="examiner")
-        except (Student.DoesNotExist, Procedure.DoesNotExist, User.DoesNotExist) as e:
-            return Response({"detail": f"Invalid reference: {e}"}, status=400)
-        sp, created = StudentProcedure.objects.update_or_create(
-            student=student,
-            procedure=procedure,
-            defaults={"examiner_a": examiner_a, "examiner_b": examiner_b},
-        )
-        return Response(
-            {
-                "id": sp.id,
-                "created": created,
-                "examiner_a": examiner_a.get_full_name(),
-                "examiner_b": examiner_b.get_full_name(),
             }
         )

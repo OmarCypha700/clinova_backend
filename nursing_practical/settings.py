@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ─────────────────────────────────────────────
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 APPEND_SLASH = False
-DEBUG = True  # os.getenv("DEBUG", "False").strip().lower() == "True"
+DEBUG = os.getenv("DEBUG", "False").strip().lower() == "True"
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 FRONTEND_DEV_URL = os.getenv("FRONTEND_DEV_URL")
@@ -221,7 +221,7 @@ CORS_ALLOW_CREDENTIALS = True
 # ─────────────────────────────────────────────
 UNFOLD = {
     "SITE_TITLE": "ClinOva Clinical Practical Assessment App",
-    "SITE_HEADER": "ClinOva-CNMT",
+    "SITE_HEADER": "ClinOva-DEMO",
 }
 
 # ─────────────────────────────────────────────

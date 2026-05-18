@@ -15,7 +15,7 @@ from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
                     StudentGradesView, StudentViewSet)
 
 # Router for viewsets
-router = DefaultRouter()
+router = DefaultRouter(trailing_slash=False)
 router.register(r'admin/examiners', ExaminerViewSet, basename='examiner')
 router.register(r'admin/programs', ProgramViewSet, basename='admin-program')
 router.register(r'admin/students', StudentViewSet, basename='admin-student')
@@ -24,51 +24,51 @@ router.register(r'admin/procedure-steps', ProcedureStepViewSet, basename='admin-
 
 urlpatterns = [
     # Site settings
-    path("settings/", SiteSettingsView.as_view(), name="site-settings"),
+    path("settings", SiteSettingsView.as_view(), name="site-settings"),
 
     # Standard endpoints (BEFORE router)
-    path("programs/", ProgramListView.as_view()),
-    path("programs/<int:program_id>/students/", StudentByProgramView.as_view()),
-    path("programs/<int:program_id>/procedures/", ProcedureByProgramView.as_view()),
-    path("students/<int:pk>/", StudentDetailView.as_view()),
-    path("students/<int:student_id>/procedures/<int:pk>/", ProcedureDetailView.as_view()),
-    path("autosave-step-score/", AutosaveStepScoreView.as_view()),
+    path("programs", ProgramListView.as_view()),
+    path("programs/<int:program_id>/students", StudentByProgramView.as_view()),
+    path("programs/<int:program_id>/procedures", ProcedureByProgramView.as_view()),
+    path("students/<int:pk>", StudentDetailView.as_view()),
+    path("students/<int:student_id>/procedures/<int:pk>", ProcedureDetailView.as_view()),
+    path("autosave-step-score", AutosaveStepScoreView.as_view()),
 
     #Level endpoints
-    path("levels/", LevelListCreateView.as_view(), name='level-list-create'),
-    path("levels/<int:pk>/", LevelDetailView.as_view(), name='level-detail'),
+    path("levels", LevelListCreateView.as_view(), name='level-list-create'),
+    path("levels/<int:pk>", LevelDetailView.as_view(), name='level-detail'),
 
     # Student import/export
-    path("students/import/", ImportStudentsView.as_view(), name='import-students'),
-    path("students/template/", DownloadStudentTemplateView.as_view(), name='student-template'),
-    path("students/bulk-delete/", BulkDeleteStudentsView.as_view(), name='bulk-delete-students'),
+    path("students/import", ImportStudentsView.as_view(), name='import-students'),
+    path("students/template", DownloadStudentTemplateView.as_view(), name='student-template'),
+    path("students/bulk-delete", BulkDeleteStudentsView.as_view(), name='bulk-delete-students'),
 
     # Care Plan
-    path("students/<int:student_id>/programs/<int:program_id>/care-plan/", 
+    path("students/<int:student_id>/programs/<int:program_id>/care-plan", 
          CarePlanView.as_view(), name='care-plan'),
     
     # Reconciliation
-    path("students/<int:student_id>/procedures/<int:procedure_id>/reconciliation/", 
+    path("students/<int:student_id>/procedures/<int:procedure_id>/reconciliation", 
          ReconciliationView.as_view()),
-    path("save-reconciliation/", SaveReconciliationView.as_view()),
+    path("save-reconciliation", SaveReconciliationView.as_view()),
     
     # Admin dashboard
-    path("dashboard-stats/", DashboardStatsView.as_view()),
+    path("dashboard-stats", DashboardStatsView.as_view()),
     
     # Grades
-    path("grades/", StudentGradesView.as_view(), name='student-grades'),
-    path("grade/stats/", GradeStatsView.as_view(), name='grade-stats'),
+    path("grades", StudentGradesView.as_view(), name='student-grades'),
+    path("grade/stats", GradeStatsView.as_view(), name='grade-stats'),
 
     # Procedure import/template
-    path("procedures/import/", ImportProceduresView.as_view(), name='import-procedures'),
-    path("procedures/template/", DownloadProcedureTemplateView.as_view(), name='procedure-template'),
-    path("procedures/bulk-delete/", BulkDeleteProceduresView.as_view(), name='bulk-delete-procedures'),
+    path("procedures/import", ImportProceduresView.as_view(), name='import-procedures'),
+    path("procedures/template", DownloadProcedureTemplateView.as_view(), name='procedure-template'),
+    path("procedures/bulk-delete", BulkDeleteProceduresView.as_view(), name='bulk-delete-procedures'),
 
     
     # Procedure Steps Import/Export
-    path("procedures/<int:procedure_id>/steps/import/", 
+    path("procedures/<int:procedure_id>/steps/import", 
          ImportProcedureStepsView.as_view(), name='import-procedure-steps'),
-    path("procedures/<int:procedure_id>/steps/template/", 
+    path("procedures/<int:procedure_id>/steps/template", 
          DownloadProcedureStepsTemplateView.as_view(), name='procedure-steps-template'),
 
     # Router URLs LAST
