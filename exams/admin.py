@@ -127,7 +127,7 @@ class StudentProcedureResource(resources.ModelResource):
     )
     student__full_name = fields.Field(
         column_name="student_full_name",
-        attribute="student__full_name",
+        attribute="student",
         widget=widgets.ForeignKeyWidget(Student, "full_name"),
     )
     procedure_name = fields.Field(
