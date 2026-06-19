@@ -2340,6 +2340,7 @@ class StudentGradesView(APIView):
         "Level",
         "Percentage (%)",
         "Grade",
+        "Care Plan Completed",
     ]
 
     def _row(self, item):
@@ -2415,7 +2416,7 @@ class StudentGradesView(APIView):
                 i["program_name"],
                 i["level"],
                 f"{i['percentage']}%",
-                i["grade"],
+                i["grade"],                
             ]
             for i in data
         ]
