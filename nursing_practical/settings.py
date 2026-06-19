@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ─────────────────────────────────────────────
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 APPEND_SLASH = False
-DEBUG = os.getenv("DEBUG", "False").strip().lower() == "True"
+DEBUG = os.getenv("DEBUG", "False").strip().lower() == "true"
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 FRONTEND_DEV_URL = os.getenv("FRONTEND_DEV_URL")
@@ -196,16 +196,16 @@ AUTH_COOKIE_ACCESS = "access_token"
 AUTH_COOKIE_REFRESH = "refresh_token"
 AUTH_COOKIE_SECURE = not DEBUG
 AUTH_COOKIE_HTTPONLY = True
-AUTH_COOKIE_SAMESITE = "Lax"
-AUTH_COOKIE_ACCESS_MAX_AGE = 60 * 60        # 1 hour
+AUTH_COOKIE_SAMESITE = "None"
+AUTH_COOKIE_ACCESS_MAX_AGE = 60 * 60  # 1 hour
 AUTH_COOKIE_REFRESH_MAX_AGE = 60 * 60 * 24  # 1 day
 
 
-SECURE_SSL_REDIRECT = not DEBUG # True in prod
+SECURE_SSL_REDIRECT = not DEBUG  # True in prod
 SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-SESSION_COOKIE_SECURE = not DEBUG # True in prod
-CSRF_COOKIE_SECURE = not DEBUG # True in prod
+SESSION_COOKIE_SECURE = not DEBUG  # True in prod
+CSRF_COOKIE_SECURE = not DEBUG  # True in prod
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
@@ -221,7 +221,7 @@ CORS_ALLOW_CREDENTIALS = True
 # ─────────────────────────────────────────────
 UNFOLD = {
     "SITE_TITLE": "ClinOva Clinical Practical Assessment App",
-    "SITE_HEADER": "ClinOva-DEMO",
+    "SITE_HEADER": "ClinOva-CNMT",
 }
 
 # ─────────────────────────────────────────────
