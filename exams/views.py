@@ -2350,6 +2350,7 @@ class StudentGradesView(APIView):
             item["level"],
             item["percentage"],
             item["grade"],
+            item["care_plan_completed"],
         ]
 
     def _export_csv(self, data):
