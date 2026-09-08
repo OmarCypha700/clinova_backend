@@ -125,6 +125,11 @@ class StudentProcedureResource(resources.ModelResource):
         attribute="student",
         widget=widgets.ForeignKeyWidget(Student, "index_number"),
     )
+    student__full_name = fields.Field(
+        column_name="student_full_name",
+        attribute="student",
+        widget=widgets.ForeignKeyWidget(Student, "full_name"),
+    )
     procedure_name = fields.Field(
         column_name="procedure_name",
         attribute="procedure",
@@ -142,6 +147,7 @@ class StudentProcedureResource(resources.ModelResource):
         fields = (
             "id",
             "student_index",
+            "student__full_name",
             "procedure_name",
             "examiner_a_username",
             "examiner_b_username",
@@ -151,6 +157,7 @@ class StudentProcedureResource(resources.ModelResource):
         export_order = (
             "id",
             "student_index",
+            "student__full_name",
             "procedure_name",
             "examiner_a_username",
             "examiner_b_username",
