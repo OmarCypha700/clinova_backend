@@ -221,7 +221,7 @@ CORS_ALLOW_CREDENTIALS = True
 # ─────────────────────────────────────────────
 UNFOLD = {
     "SITE_TITLE": "ClinOva Clinical Practical Assessment App",
-    "SITE_HEADER": "ClinOva-CNMT",
+    "SITE_HEADER": "ClinOva-DEV",
 }
 
 # ─────────────────────────────────────────────

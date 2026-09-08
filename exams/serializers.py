@@ -338,6 +338,64 @@ class ProcedureListSerializer(StudentProcedureMixin, serializers.ModelSerializer
 
 
 # ─────────────────────────────────────────────
+# EXAMINER ASSESSMENTS (Examiner dashboard)
+# ─────────────────────────────────────────────
+
+
+class ExaminerAssessmentSerializer(serializers.ModelSerializer):
+    student_id = serializers.IntegerField(source="student.id", read_only=True)
+    student_name = serializers.CharField(source="student.full_name", read_only=True)
+    student_index_number = serializers.CharField(
+        source="student.index_number", read_only=True
+    )
+    procedure_id = serializers.IntegerField(source="procedure.id", read_only=True)
+    procedure_name = serializers.CharField(source="procedure.name", read_only=True)
+    program_id = serializers.IntegerField(source="procedure.program.id", read_only=True)
+    program_name = serializers.CharField(
+        source="procedure.program.name", read_only=True
+    )
+    display_status = serializers.SerializerMethodField()
+    can_reconcile = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentProcedure
+        fields = [
+            "id",
+            "student_id",
+            "student_name",
+            "student_index_number",
+            "procedure_id",
+            "procedure_name",
+            "program_id",
+            "program_name",
+            "status",
+            "display_status",
+            "can_reconcile",
+            "assessed_at",
+        ]
+
+    def get_display_status(self, obj):
+        request = self.context.get("request")
+        if obj.examiner_a == obj.examiner_b:
+            return "pending"
+        if obj.status == "reconciled":
+            return "reconciled"
+        if obj.status == "scored":
+            return (
+                "ready_to_reconcile"
+                if request and obj.can_user_reconcile(request.user)
+                else "scored"
+            )
+        return "pending"
+
+    def get_can_reconcile(self, obj):
+        request = self.context.get("request")
+        if not request or obj.status != "scored":
+            return False
+        return obj.can_user_reconcile(request.user)
+
+
+# ─────────────────────────────────────────────
 # RECONCILIATION
 # ─────────────────────────────────────────────
 

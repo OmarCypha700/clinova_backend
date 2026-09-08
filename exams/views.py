@@ -1,7 +1,7 @@
 import csv
 
 from django.db import transaction
-from django.db.models import Count, OuterRef, Prefetch, Q, Subquery, Sum, Value
+from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
@@ -46,6 +46,7 @@ from .serializers import (
     CarePlanCreateSerializer,
     CarePlanSerializer,
     DashboardStatsSerializer,
+    ExaminerAssessmentSerializer,
     LevelSerializer,
     ProcedureAdminListSerializer,
     ProcedureCreateUpdateSerializer,
@@ -83,6 +84,12 @@ class ProcedurePagination(PageNumberPagination):
     page_size = 100
     page_size_query_param = "page_size"
     max_page_size = 5000
+
+
+class ExaminerAssessmentPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
 
 # ─────────────────────────────────────────────
@@ -976,6 +983,54 @@ class SaveReconciliationView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+# ─────────────────────────────────────────────
+# EXAMINER ASSESSMENTS DASHBOARD (EF)
+# ─────────────────────────────────────────────
+
+
+class ExaminerAssessmentsView(ListAPIView):
+    """
+    Students and procedures scored (or being scored) by the logged-in examiner,
+    across all programs, with their current status.
+    """
+
+    permission_classes = [IsAuthenticated, IsExaminer]
+    serializer_class = ExaminerAssessmentSerializer
+    pagination_class = ExaminerAssessmentPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = (
+            StudentProcedure.objects.filter(Q(examiner_a=user) | Q(examiner_b=user))
+            .exclude(examiner_a=F("examiner_b"))  # excludes unassigned placeholder rows
+            .select_related("student", "procedure", "procedure__program")
+            .order_by("-assessed_at")
+        )
+
+        program_id = self.request.query_params.get("program_id")
+        if program_id:
+            queryset = queryset.filter(procedure__program_id=program_id)
+
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+
+        search = self.request.query_params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(student__full_name__icontains=search)
+                | Q(student__index_number__icontains=search)
+                | Q(procedure__name__icontains=search)
+            )
+
+        return queryset
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
 
 
 # ===============================================
