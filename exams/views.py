@@ -1033,6 +1033,28 @@ class ExaminerAssessmentsView(ListAPIView):
         return context
 
 
+class ExaminerAssessmentCountsView(APIView):
+    """
+    Per-status counts of the logged-in examiner's assessments — powers the
+    tab badges on the examiner dashboard without fetching full result pages.
+    """
+
+    permission_classes = [IsAuthenticated, IsExaminer]
+
+    def get(self, request):
+        user = request.user
+        base_qs = StudentProcedure.objects.filter(
+            Q(examiner_a=user) | Q(examiner_b=user)
+        ).exclude(examiner_a=F("examiner_b"))
+
+        counts = base_qs.aggregate(
+            pending=Count("id", filter=Q(status="pending")),
+            scored=Count("id", filter=Q(status="scored")),
+            reconciled=Count("id", filter=Q(status="reconciled")),
+        )
+        return Response(counts)
+
+
 # ===============================================
 # ADMIN FACING VIEWS
 # ===============================================

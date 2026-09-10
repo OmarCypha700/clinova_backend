@@ -5,7 +5,8 @@ from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
                     BulkDeleteStudentsView, CarePlanView, DashboardStatsView,
                     DownloadProcedureStepsTemplateView,
                     DownloadProcedureTemplateView, DownloadStudentTemplateView,
-                    ExaminerAssessmentsView, ExaminerViewSet, GradeStatsView,
+                    ExaminerAssessmentCountsView, ExaminerAssessmentsView,
+                    ExaminerViewSet, GradeStatsView,
                     ImportProcedureStepsView, ImportProceduresView,
                     ImportStudentsView, LevelDetailView,
                     LevelListCreateView, ProcedureByProgramView,
@@ -29,6 +30,7 @@ urlpatterns = [
 
     # Standard endpoints (BEFORE router)
     path("programs", ProgramListView.as_view()),
+    path("examiner/assessments/counts", ExaminerAssessmentCountsView.as_view()),
     path("examiner/assessments", ExaminerAssessmentsView.as_view()),
     path("programs/<int:program_id>/students", StudentByProgramView.as_view()),
     path("programs/<int:program_id>/procedures", ProcedureByProgramView.as_view()),
