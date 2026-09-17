@@ -1498,6 +1498,34 @@ class StudentViewSet(viewsets.ModelViewSet):
         student.save(update_fields=["is_active"])
         return Response({"is_active": student.is_active})
 
+    # ── Bulk toggle active ────────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="bulk-toggle-active")
+    @transaction.atomic
+    def bulk_toggle_active(self, request):
+        ids = request.data.get("student_ids", [])
+        is_active = request.data.get("is_active")
+
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "student_ids must be a non-empty list"}, status=400
+            )
+        if is_active is None:
+            return Response(
+                {"error": "is_active (true/false) is required"}, status=400
+            )
+
+        count = Student.objects.filter(id__in=ids).update(
+            is_active=bool(is_active)
+        )
+        action_word = "activated" if is_active else "deactivated"
+        return Response(
+            {
+                "success": True,
+                "updated_count": count,
+                "message": f"Successfully {action_word} {count} student(s)",
+            }
+        )
+
 
 class ImportStudentsView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
