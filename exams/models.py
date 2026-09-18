@@ -46,10 +46,34 @@ class Student(models.Model):
         return f"{self.index_number} - {self.full_name} ({self.level})"
 
 
+class Category(models.Model):
+    """
+    Procedure grouping (e.g. "Basic Nursing Procedures", "Midwifery-Specific
+    Procedures"). Global/shared across programs — the same category can be
+    reused by procedures in RGN, RM, PHN, NAP, etc.
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name_plural = "Categories"
+
+    def __str__(self):
+        return self.name
+
+
 class Procedure(models.Model):
     program = models.ForeignKey(Program, on_delete=models.CASCADE, related_name="procedures")
     name = models.CharField(max_length=255)
     total_score = models.PositiveIntegerField()
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="procedures",
+    )
 
     class Meta:
         unique_together = ("program", "name")

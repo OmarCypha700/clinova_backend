@@ -31,6 +31,7 @@ from accounts.models import User
 from .filters import StudentFilter
 from .models import (
     CarePlan,
+    Category,
     Level,
     Procedure,
     ProcedureStep,
@@ -45,6 +46,7 @@ from .permissions import IsAdmin, IsExaminer
 from .serializers import (
     CarePlanCreateSerializer,
     CarePlanSerializer,
+    CategorySerializer,
     DashboardStatsSerializer,
     ExaminerAssessmentSerializer,
     LevelSerializer,
@@ -162,6 +164,36 @@ class LevelDetailView(RetrieveUpdateDestroyAPIView):
     queryset = Level.objects.all()
     serializer_class = LevelSerializer
     permission_classes = [IsAuthenticated]
+
+
+# ─────────────────────────────────────────────
+# CATEGORY VIEWS
+# ─────────────────────────────────────────────
+
+
+class CategoryListCreateView(ListCreateAPIView):
+    """
+    GET  – any authenticated user (admin panel + examiner category gate)
+    POST – admin only
+    """
+
+    queryset = Category.objects.annotate(procedure_count=Count("procedures")).order_by("name")
+    serializer_class = CategorySerializer
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
+
+
+class CategoryDetailView(RetrieveUpdateDestroyAPIView):
+    queryset = Category.objects.annotate(procedure_count=Count("procedures")).order_by("name")
+    serializer_class = CategorySerializer
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
 
 
 # ===============================================
@@ -392,11 +424,20 @@ class ProcedureByProgramView(ListAPIView):
     serializer_class = ProcedureListSerializer
 
     def get_queryset(self):
-        return (
+        qs = (
             Procedure.objects.filter(program_id=self.kwargs["program_id"])
+            .select_related("category")
             .annotate(step_count=Count("steps"))
             .order_by("pk")
         )
+
+        category = self.request.query_params.get("category")
+        if category == "none":
+            qs = qs.filter(category__isnull=True)
+        elif category:
+            qs = qs.filter(category_id=category)
+
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -419,6 +460,47 @@ class ProcedureByProgramView(ListAPIView):
             context["student_procedures_map"] = {sp.procedure_id: sp for sp in sps}
 
         return context
+
+
+class ProcedureCategoriesByProgramView(APIView):
+    """
+    Categories that have at least one procedure in this program, with a
+    procedure count each — powers the examiner's "pick a category first"
+    gate on the procedure-selection screen. Adds a synthetic "Uncategorized"
+    bucket (id "none") when the program has procedures without a category,
+    so nothing becomes unreachable while categorization is in progress.
+    """
+
+    permission_classes = [IsAuthenticated, IsExaminer | IsAdmin]
+
+    def get(self, request, program_id):
+        categories = (
+            Category.objects.filter(procedures__program_id=program_id)
+            .annotate(
+                procedure_count=Count(
+                    "procedures", filter=Q(procedures__program_id=program_id)
+                )
+            )
+            .order_by("name")
+        )
+        data = [
+            {"id": c.id, "name": c.name, "procedure_count": c.procedure_count}
+            for c in categories
+        ]
+
+        uncategorized_count = Procedure.objects.filter(
+            program_id=program_id, category__isnull=True
+        ).count()
+        if uncategorized_count:
+            data.append(
+                {
+                    "id": "none",
+                    "name": "Uncategorized",
+                    "procedure_count": uncategorized_count,
+                }
+            )
+
+        return Response(data)
 
 
 # class ProcedureDetailView(RetrieveAPIView):
@@ -1712,12 +1794,19 @@ class ProcedureViewSet(viewsets.ModelViewSet):
     search_fields = ["name"]
 
     def get_queryset(self):
-        qs = Procedure.objects.select_related("program").annotate(
+        qs = Procedure.objects.select_related("program", "category").annotate(
             step_count=Count("steps")
         )
         program_id = self.request.query_params.get("program_id")
         if program_id and program_id != "all":
             qs = qs.filter(program_id=program_id)
+
+        category_id = self.request.query_params.get("category_id")
+        if category_id == "none":
+            qs = qs.filter(category__isnull=True)
+        elif category_id and category_id != "all":
+            qs = qs.filter(category_id=category_id)
+
         return qs
 
     def get_serializer_class(self):
@@ -1733,6 +1822,31 @@ class ProcedureViewSet(viewsets.ModelViewSet):
             return self._handle_export(request, export_format)
         return super().list(request, *args, **kwargs)
 
+    # ── Bulk assign category ──────────────────────────────────────────────────
+    @action(detail=False, methods=["post"], url_path="bulk-assign-category")
+    @transaction.atomic
+    def bulk_assign_category(self, request):
+        ids = request.data.get("procedure_ids", [])
+        category_id = request.data.get("category_id")  # null clears the category
+
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "procedure_ids must be a non-empty list"}, status=400
+            )
+
+        if category_id is not None:
+            if not Category.objects.filter(id=category_id).exists():
+                return Response({"error": "Category not found"}, status=404)
+
+        count = Procedure.objects.filter(id__in=ids).update(category_id=category_id)
+        return Response(
+            {
+                "success": True,
+                "updated_count": count,
+                "message": f"Successfully categorized {count} procedure(s)",
+            }
+        )
+
     def _handle_export(self, request, export_format):
         procedures = Procedure.objects.select_related("program").prefetch_related(
             "steps"
@@ -1740,6 +1854,12 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         program_id = request.query_params.get("program_id")
         if program_id and program_id != "all":
             procedures = procedures.filter(program_id=program_id)
+
+        category_id = request.query_params.get("category_id")
+        if category_id == "none":
+            procedures = procedures.filter(category__isnull=True)
+        elif category_id and category_id != "all":
+            procedures = procedures.filter(category_id=category_id)
 
         if export_format == "excel":
             return self._export_excel(procedures)
@@ -1930,6 +2050,7 @@ class ImportProceduresView(APIView):
                 groups[name] = {
                     "program_name": row.get("Program", "").strip(),
                     "total_score": row.get("Total Score", "").strip(),
+                    "category_name": row.get("Category", "").strip(),
                     "steps": [],
                 }
             order_s = row.get("Step Order", "").strip()
@@ -1943,6 +2064,7 @@ class ImportProceduresView(APIView):
                     errors.append(f"Row {row_num}: Invalid step order '{order_s}'")
 
         programs = {p.name: p for p in Program.objects.all()}
+        categories = {c.name: c for c in Category.objects.all()}
 
         for name, data in groups.items():
             try:
@@ -1961,9 +2083,17 @@ class ImportProceduresView(APIView):
                 target_programs = [prog]
             else:
                 target_programs = list(programs.values())
+
+            defaults = {"total_score": total_score}
+            cat_name = data["category_name"]
+            if cat_name:
+                if cat_name not in categories:
+                    categories[cat_name] = Category.objects.create(name=cat_name)
+                defaults["category"] = categories[cat_name]
+
             for prog in target_programs:
                 proc, created = Procedure.objects.update_or_create(
-                    name=name, program=prog, defaults={"total_score": total_score}
+                    name=name, program=prog, defaults=defaults
                 )
                 if created:
                     procs_created += 1
@@ -2005,6 +2135,7 @@ class ImportProceduresView(APIView):
         errors = []
         procedures_dict = {}
         programs = {p.name: p for p in Program.objects.all()}
+        categories = {c.name: c for c in Category.objects.all()}
 
         with transaction.atomic():
             ws_proc = wb["Procedures"]
@@ -2021,6 +2152,9 @@ class ImportProceduresView(APIView):
                     except (ValueError, TypeError):
                         errors.append(f"Procedures Row {row_num}: Invalid total score")
                         continue
+                    cat_name = (
+                        str(row[3]).strip() if len(row) > 3 and row[3] else ""
+                    )
                     if not name:
                         continue
                     if prog_name:
@@ -2033,11 +2167,20 @@ class ImportProceduresView(APIView):
                         target_progs = [prog]
                     else:
                         target_progs = list(programs.values())
+
+                    defaults = {"total_score": total_score}
+                    if cat_name:
+                        if cat_name not in categories:
+                            categories[cat_name] = Category.objects.create(
+                                name=cat_name
+                            )
+                        defaults["category"] = categories[cat_name]
+
                     for prog in target_progs:
                         proc, created = Procedure.objects.update_or_create(
                             name=name,
                             program=prog,
-                            defaults={"total_score": total_score},
+                            defaults=defaults,
                         )
                         procedures_dict[(name, prog.name)] = proc
                         if created:
@@ -2109,14 +2252,28 @@ class DownloadProcedureTemplateView(APIView):
         wb = Workbook()
         ws_proc = wb.active
         ws_proc.title = "Procedures"
-        ws_proc.append(["Name", "Program", "Total Score"])
+        ws_proc.append(["Name", "Program", "Total Score", "Category"])
         for cell in ws_proc[1]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(
                 start_color="4472C4", end_color="4472C4", fill_type="solid"
             )
-        ws_proc.append(["Vital Signs Assessment", "Bachelor of Science in Nursing", 20])
-        ws_proc.append(["IV Catheter Insertion", "Bachelor of Science in Nursing", 20])
+        ws_proc.append(
+            [
+                "Vital Signs Assessment",
+                "Bachelor of Science in Nursing",
+                20,
+                "Basic Nursing Procedures",
+            ]
+        )
+        ws_proc.append(
+            [
+                "IV Catheter Insertion",
+                "Bachelor of Science in Nursing",
+                20,
+                "Advanced Nursing Procedures",
+            ]
+        )
 
         ws_steps = wb.create_sheet("Procedure Steps")
         ws_steps.append(["Procedure Name", "Step Order", "Description"])
@@ -2134,8 +2291,14 @@ class DownloadProcedureTemplateView(APIView):
         )
         ws_steps.append(["Vital Signs Assessment", 2, "Wash hands and put on gloves"])
 
-        wb.create_sheet("Instructions").append(
-            ["See column headers for required fields."]
+        ws_inst = wb.create_sheet("Instructions")
+        ws_inst.append(["See column headers for required fields."])
+        ws_inst.append(
+            [
+                "Category is optional. Leave blank to leave an existing "
+                "procedure's category unchanged, or create a new one automatically "
+                "if the name doesn't already exist."
+            ]
         )
 
         response = HttpResponse(

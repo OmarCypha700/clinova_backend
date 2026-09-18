@@ -3,6 +3,7 @@ from rest_framework import serializers
 
 from .models import (
     CarePlan,
+    Category,
     Level,
     Procedure,
     ProcedureStep,
@@ -137,6 +138,22 @@ class LevelSerializer(serializers.ModelSerializer):
 
 
 # ─────────────────────────────────────────────
+# CATEGORY
+# ─────────────────────────────────────────────
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    procedure_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Category
+        fields = ["id", "name", "procedure_count"]
+
+    def get_procedure_count(self, obj):
+        return getattr(obj, "procedure_count", obj.procedures.count())
+
+
+# ─────────────────────────────────────────────
 # PROGRAM
 # ─────────────────────────────────────────────
 
@@ -205,10 +222,13 @@ class StudentCreateUpdateSerializer(serializers.ModelSerializer):
 
 class ProcedureCreateUpdateSerializer(serializers.ModelSerializer):
     program_id = serializers.IntegerField(write_only=True)
+    category_id = serializers.IntegerField(
+        write_only=True, required=False, allow_null=True
+    )
 
     class Meta:
         model = Procedure
-        fields = ["id", "name", "program_id", "total_score"]
+        fields = ["id", "name", "program_id", "total_score", "category_id"]
 
     def create(self, validated_data):
         program_id = validated_data.pop("program_id")
@@ -219,12 +239,25 @@ class ProcedureCreateUpdateSerializer(serializers.ModelSerializer):
 class ProcedureAdminListSerializer(serializers.ModelSerializer):
     program = serializers.CharField(source="program.name", read_only=True)
     program_id = serializers.IntegerField(source="program.id", read_only=True)
+    category_name = serializers.CharField(
+        source="category.name", read_only=True, default=None
+    )
+    category_id = serializers.IntegerField(source="category.id", read_only=True, default=None)
     # Expects queryset annotated with step_count=Count("steps")
     step_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Procedure
-        fields = ["id", "name", "program", "program_id", "total_score", "step_count"]
+        fields = [
+            "id",
+            "name",
+            "program",
+            "program_id",
+            "category_name",
+            "category_id",
+            "total_score",
+            "step_count",
+        ]
 
 
 class ProcedureStepCreateUpdateSerializer(serializers.ModelSerializer):
@@ -275,6 +308,10 @@ class ProcedureListSerializer(StudentProcedureMixin, serializers.ModelSerializer
         source="program.abbreviation", read_only=True
     )
     program_id = serializers.IntegerField(source="program.id", read_only=True)
+    category_id = serializers.IntegerField(source="category.id", read_only=True, default=None)
+    category_name = serializers.CharField(
+        source="category.name", read_only=True, default=None
+    )
     step_count = serializers.IntegerField(read_only=True)
     status = serializers.SerializerMethodField()
     can_reconcile = serializers.SerializerMethodField()
@@ -290,6 +327,8 @@ class ProcedureListSerializer(StudentProcedureMixin, serializers.ModelSerializer
             "program_id",
             "program_name",
             "program_abbreviation",
+            "category_id",
+            "category_name",
             "status",
             "step_count",
             "can_reconcile",
@@ -354,6 +393,9 @@ class ExaminerAssessmentSerializer(serializers.ModelSerializer):
     program_name = serializers.CharField(
         source="procedure.program.name", read_only=True
     )
+    category_name = serializers.CharField(
+        source="procedure.category.name", read_only=True, default=None
+    )
     display_status = serializers.SerializerMethodField()
     can_reconcile = serializers.SerializerMethodField()
 
@@ -368,6 +410,7 @@ class ExaminerAssessmentSerializer(serializers.ModelSerializer):
             "procedure_name",
             "program_id",
             "program_name",
+            "category_name",
             "status",
             "display_status",
             "can_reconcile",

@@ -7,6 +7,7 @@ from unfold.paginator import InfinitePaginator
 
 from .models import (
     CarePlan,
+    Category,
     Procedure,
     ProcedureStep,
     ProcedureStepScore,
@@ -64,11 +65,16 @@ class ProcedureResource(resources.ModelResource):
         attribute="program",
         widget=widgets.ForeignKeyWidget(Program, "name"),
     )
+    category_name = fields.Field(
+        column_name="category_name",
+        attribute="category",
+        widget=widgets.ForeignKeyWidget(Category, "name"),
+    )
 
     class Meta:
         model = Procedure
-        fields = ("id", "program_name", "name", "total_score")
-        export_order = ("id", "program_name", "name", "total_score")
+        fields = ("id", "program_name", "name", "total_score", "category_name")
+        export_order = ("id", "program_name", "name", "total_score", "category_name")
         import_id_fields = ["program_name", "name"]
 
 
@@ -197,13 +203,24 @@ class ProcedureStepInline(admin.TabularInline):
     ordering = ("step_order",)
 
 
+@admin.register(Category)
+class CategoryAdmin(ModelAdmin):
+    list_display = ("name", "get_procedures_count")
+    search_fields = ("name",)
+
+    def get_procedures_count(self, obj):
+        return obj.procedures.count()
+
+    get_procedures_count.short_description = "Procedures"
+
+
 @admin.register(Procedure)
 class ProcedureAdmin(ModelAdmin, ImportExportModelAdmin):
     import_form_class = ImportForm
     export_form_class = ExportForm
     resource_class = ProcedureResource
-    list_display = ("name", "program", "total_score", "get_steps_count")
-    list_filter = ("program",)
+    list_display = ("name", "program", "category", "total_score", "get_steps_count")
+    list_filter = ("program", "category")
     search_fields = ("name",)
     inlines = [ProcedureStepInline]
 

@@ -2,7 +2,8 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
-                    BulkDeleteStudentsView, CarePlanView, DashboardStatsView,
+                    BulkDeleteStudentsView, CarePlanView, CategoryDetailView,
+                    CategoryListCreateView, DashboardStatsView,
                     DownloadProcedureStepsTemplateView,
                     DownloadProcedureTemplateView, DownloadStudentTemplateView,
                     ExaminerAssessmentCountsView, ExaminerAssessmentsView,
@@ -10,7 +11,8 @@ from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
                     ImportProcedureStepsView, ImportProceduresView,
                     ImportStudentsView, LevelDetailView,
                     LevelListCreateView, ProcedureByProgramView,
-                    ProcedureDetailView, ProcedureStepViewSet,
+                    ProcedureCategoriesByProgramView, ProcedureDetailView,
+                    ProcedureStepViewSet,
                     ProcedureViewSet, ProgramListView, ProgramViewSet,
                     ReconciliationView, SaveReconciliationView,
                     SiteSettingsView, StudentByProgramView, StudentDetailView,
@@ -34,6 +36,8 @@ urlpatterns = [
     path("examiner/assessments", ExaminerAssessmentsView.as_view()),
     path("programs/<int:program_id>/students", StudentByProgramView.as_view()),
     path("programs/<int:program_id>/procedures", ProcedureByProgramView.as_view()),
+    path("programs/<int:program_id>/procedure-categories",
+         ProcedureCategoriesByProgramView.as_view()),
     path("students/<int:pk>", StudentDetailView.as_view()),
     path("students/<int:student_id>/procedures/<int:pk>", ProcedureDetailView.as_view()),
     path("autosave-step-score", AutosaveStepScoreView.as_view()),
@@ -41,6 +45,10 @@ urlpatterns = [
     #Level endpoints
     path("levels", LevelListCreateView.as_view(), name='level-list-create'),
     path("levels/<int:pk>", LevelDetailView.as_view(), name='level-detail'),
+
+    # Category endpoints
+    path("categories", CategoryListCreateView.as_view(), name='category-list-create'),
+    path("categories/<int:pk>", CategoryDetailView.as_view(), name='category-detail'),
 
     # Student import/export
     path("students/import", ImportStudentsView.as_view(), name='import-students'),
