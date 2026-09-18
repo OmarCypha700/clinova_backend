@@ -1,4 +1,5 @@
 import csv
+import secrets
 
 from django.db import transaction
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum, Value
@@ -155,15 +156,28 @@ class ProgramViewSet(viewsets.ModelViewSet):
 
 
 class LevelListCreateView(ListCreateAPIView):
+    """
+    GET  – any authenticated user (examiner level filter, admin pages)
+    POST – admin only
+    """
+
     queryset = Level.objects.all()
     serializer_class = LevelSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
 
 
 class LevelDetailView(RetrieveUpdateDestroyAPIView):
     queryset = Level.objects.all()
     serializer_class = LevelSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
 
 
 # ─────────────────────────────────────────────
@@ -1202,8 +1216,6 @@ class ExaminerViewSet(viewsets.ModelViewSet):
     ordering_fields = ["username", "first_name", "date_joined", "is_active"]
     ordering = ["username"]
  
-    DEFAULT_IMPORT_PASSWORD = "Change123!"
- 
     def get_queryset(self):
         qs = User.objects.filter(role="examiner")
         is_active = self.request.query_params.get("is_active")
@@ -1307,8 +1319,11 @@ class ExaminerViewSet(viewsets.ModelViewSet):
     def _process_import(self, rows):
         created = updated = errors = 0
         error_details = []
+        # Rows given a generated password are never truncated: the admin needs
+        # every one of them, as it is shown only in this response.
+        generated_details = []
         success_details = []
- 
+
         for row_num, row in enumerate(rows, start=2):
             try:
                 username = str(row.get("Username") or "").strip()
@@ -1353,24 +1368,27 @@ class ExaminerViewSet(viewsets.ModelViewSet):
                     existing.save()
                     updated += 1
                 else:
-                    # Create new examiner
-                    effective_password = password or self.DEFAULT_IMPORT_PASSWORD
+                    # Create new examiner; a blank password gets a unique
+                    # random one instead of a shared default.
+                    generated = None if password else secrets.token_urlsafe(9)
                     User.objects.create_user(
                         username=username,
                         first_name=first_name,
                         last_name=last_name,
                         email=email,
-                        password=effective_password,
+                        password=password or generated,
                         role="examiner",
                         is_active=is_active,
                     )
                     created += 1
                     full = f"{first_name} {last_name}".strip() or username
-                    success_details.append(
-                        f"{full} (@{username})"
-                        + ("" if password else " — default password assigned")
-                    )
- 
+                    if generated:
+                        generated_details.append(
+                            f"{full} (@{username}) — temporary password: {generated}"
+                        )
+                    else:
+                        success_details.append(f"{full} (@{username})")
+
             except Exception as e:
                 error_details.append(f"Row {row_num}: {e}")
                 errors += 1
@@ -1382,10 +1400,10 @@ class ExaminerViewSet(viewsets.ModelViewSet):
                 "updated": updated,
                 "errors": errors,
                 "error_details": error_details[:20],
-                "success_details": success_details[:20],
+                "success_details": generated_details + success_details[:20],
             }
         )
- 
+
     # ── Download import template ──────────────────────────────────────────────
     @action(detail=False, methods=["get"], url_path="template")
     def download_template(self, request):
@@ -1414,7 +1432,7 @@ class ExaminerViewSet(viewsets.ModelViewSet):
             [""],
             ["Notes:"],
             ["  - Username must be unique across all users."],
-            ["  - Password is optional. If left blank, a default password is assigned."],
+            ["  - Password is optional. If left blank for a new examiner, a unique temporary password is generated and shown once after the import."],
             ["  - Status accepts: Yes / No (defaults to Yes / Active)."],
             ["  - Existing examiners with the same username will be updated."],
         ]:
@@ -2312,8 +2330,10 @@ class DownloadProcedureTemplateView(APIView):
 
 
 class ProcedureStepViewSet(viewsets.ModelViewSet):
+    # Admin-only (reads included): examiners get steps from the procedure
+    # detail endpoint, never from this CRUD endpoint.
     serializer_class = ProcedureStepCreateUpdateSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def get_queryset(self):
         qs = ProcedureStep.objects.select_related("procedure")
