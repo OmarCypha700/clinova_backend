@@ -5,6 +5,7 @@ from django.db import transaction
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from openpyxl import Workbook, load_workbook
@@ -31,6 +32,8 @@ from accounts.models import User
 
 from .filters import StudentFilter
 from .models import (
+    CARE_PLAN_MAX_SCORE,
+    CARE_PLAN_MAX_SLOTS,
     CarePlan,
     Category,
     Level,
@@ -252,34 +255,65 @@ class StudentDetailView(RetrieveAPIView):
 
 class CarePlanView(APIView):
     """
-    GET  – return existing care plan or {exists: False}
+    GET  – return the student's care plans (one per slot) and whether a second
+           slot may be added
     POST – submit (or rescore, depending on the care_plan_lock_on_submit flag)
+           the care plan for `slot` (default 1)
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, student_id, program_id):
-        try:
-            care_plan = CarePlan.objects.select_related("examiner").get(
-                student_id=student_id,
-                program_id=program_id,
-            )
-            return Response(CarePlanSerializer(care_plan).data)
-        except CarePlan.DoesNotExist:
-            return Response(
-                {"exists": False, "message": "No care plan found for this student"},
-                status=status.HTTP_200_OK,
-            )
+        student = get_object_or_404(Student, pk=student_id)
+        care_plans = CarePlan.objects.select_related("examiner").filter(
+            student_id=student_id,
+            program_id=program_id,
+        )
+        site_settings = SiteSettings.get()
+        return Response(
+            {
+                "care_plans": CarePlanSerializer(care_plans, many=True).data,
+                "can_add_second": site_settings.allows_second_care_plan(student),
+                "max_slots": CARE_PLAN_MAX_SLOTS,
+                "lock_on_submit": site_settings.care_plan_lock_on_submit,
+            }
+        )
 
     @transaction.atomic
     def post(self, request, student_id, program_id):
         site_settings = SiteSettings.get()
         lock_on_submit = site_settings.care_plan_lock_on_submit
 
+        try:
+            slot = int(request.data.get("slot", 1))
+        except (TypeError, ValueError):
+            slot = 0
+        if not (1 <= slot <= CARE_PLAN_MAX_SLOTS):
+            return Response(
+                {"error": "Invalid care plan slot"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         existing = CarePlan.objects.filter(
             student_id=student_id,
             program_id=program_id,
+            slot=slot,
         ).first()
+
+        if slot > 1 and not existing:
+            student = get_object_or_404(Student, pk=student_id)
+            if not site_settings.allows_second_care_plan(student):
+                return Response(
+                    {"error": "A second care plan is not enabled for this student"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not CarePlan.objects.filter(
+                student_id=student_id, program_id=program_id, slot=1
+            ).exists():
+                return Response(
+                    {"error": "Submit the first care plan before adding another"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         if existing:
             if lock_on_submit:
@@ -299,10 +333,13 @@ class CarePlanView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                score_int = int(score)
-                if not (0 <= score_int <= 20):
+                try:
+                    score_int = int(score)
+                except (TypeError, ValueError):
+                    score_int = -1
+                if not (0 <= score_int <= CARE_PLAN_MAX_SCORE):
                     return Response(
-                        {"error": "Score must be between 0 and 20"},
+                        {"error": f"Score must be between 0 and {CARE_PLAN_MAX_SCORE}"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
@@ -317,10 +354,11 @@ class CarePlanView(APIView):
                     CarePlanSerializer(existing).data, status=status.HTTP_200_OK
                 )
 
-        # No existing care plan — create it
+        # No existing care plan in this slot — create it
         data = request.data.copy()
         data["student"] = student_id
         data["program"] = program_id
+        data["slot"] = slot
 
         serializer = CarePlanCreateSerializer(data=data)
         if serializer.is_valid():
@@ -2531,6 +2569,12 @@ class StudentGradesView(APIView):
             .annotate(total=Sum("max_score"))
             .values("total")[:1]
         )
+        care_count_sq = (
+            CarePlan.objects.filter(student=OuterRef("pk"))
+            .values("student")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
 
         qs = (
             Student.objects.select_related("program", "level")
@@ -2541,6 +2585,7 @@ class StudentGradesView(APIView):
                 reconciled_count=Coalesce(Subquery(procedure_count_sq), Value(0)),
                 care_plan_score=Coalesce(Subquery(care_score_sq), Value(0)),
                 care_plan_max_score=Coalesce(Subquery(care_max_sq), Value(0)),
+                care_plan_count=Coalesce(Subquery(care_count_sq), Value(0)),
             )
         )
 
@@ -2562,8 +2607,10 @@ class StudentGradesView(APIView):
             proc_max = s.procedure_max_score or 0
             cp_score = s.care_plan_score or 0
             cp_max = s.care_plan_max_score or 0
+            cp_count = s.care_plan_count or 0
             total = proc_score + cp_score
-            max_score = proc_max + (cp_max if cp_score > 0 else 0)
+            # A submitted care plan counts toward the max even if it scored 0
+            max_score = proc_max + cp_max
             pct = round((total / max_score * 100), 1) if max_score > 0 else 0.0
             result.append(
                 {
@@ -2578,12 +2625,13 @@ class StudentGradesView(APIView):
                     "procedure_max_score": proc_max,
                     "care_plan_score": cp_score,
                     "care_plan_max_score": cp_max,
+                    "care_plan_count": cp_count,
                     "total_score": round(total, 2),
                     "max_score": max_score,
                     "percentage": pct,
                     "grade": self._calculate_grade(pct),
                     "reconciled_count": s.reconciled_count,
-                    "care_plan_completed": cp_score > 0,
+                    "care_plan_completed": cp_count > 0,
                 }
             )
         return result
@@ -2629,6 +2677,7 @@ class StudentGradesView(APIView):
         "Percentage (%)",
         "Grade",
         "Care Plan Completed",
+        "Care Plans",
     ]
 
     def _row(self, item):
@@ -2640,6 +2689,7 @@ class StudentGradesView(APIView):
             item["percentage"],
             item["grade"],
             item["care_plan_completed"],
+            item["care_plan_count"],
         ]
 
     def _export_csv(self, data):

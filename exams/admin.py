@@ -7,6 +7,7 @@ from unfold.paginator import InfinitePaginator
 
 from .models import (
     CarePlan,
+    CarePlanEligibility,
     Category,
     Procedure,
     ProcedureStep,
@@ -329,12 +330,13 @@ class CarePlanAdmin(ModelAdmin):
         "student",
         "program",
         "examiner",
+        "slot",
         "score",
         "max_score",
         "assessed_at",
         "is_locked",
     )
-    list_filter = ("program", "is_locked", "assessed_at")
+    list_filter = ("program", "slot", "is_locked", "assessed_at")
     search_fields = (
         "student__index_number",
         "student__full_name",
@@ -342,3 +344,9 @@ class CarePlanAdmin(ModelAdmin):
     )
     date_hierarchy = "assessed_at"
     readonly_fields = ("assessed_at",)
+
+
+@admin.register(CarePlanEligibility)
+class CarePlanEligibilityAdmin(ModelAdmin):
+    list_display = ("program", "level")
+    list_filter = ("program", "level")
