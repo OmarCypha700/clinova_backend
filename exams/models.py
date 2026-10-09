@@ -1,4 +1,4 @@
-from django.core.validators import MaxValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Sum
 
@@ -272,8 +272,16 @@ class ReconciledScore(models.Model):
         return f"{self.student_procedure.student} - {self.step} = {self.score} (reconciled)"
 
 
+CARE_PLAN_MAX_SCORE = 20
+CARE_PLAN_MAX_SLOTS = 2
+
+
 class CarePlan(models.Model):
-    """Care Plan assessment - single examiner scoring"""
+    """Care Plan assessment - single examiner scoring.
+
+    A student normally has one care plan per program (slot 1). When enabled in
+    SiteSettings for the student's program/level, a second one (slot 2) may be added.
+    """
 
     student = models.ForeignKey(
         Student, on_delete=models.CASCADE, related_name="care_plans", db_index=True
@@ -282,18 +290,24 @@ class CarePlan(models.Model):
     examiner = models.ForeignKey(
         User, on_delete=models.PROTECT, related_name="care_plan_assessments"
     )
-    score = models.PositiveSmallIntegerField(validators=[MaxValueValidator(20)])  # 0-20
-    max_score = models.PositiveIntegerField(default=20)
+    slot = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(CARE_PLAN_MAX_SLOTS)],
+    )
+    score = models.PositiveSmallIntegerField(
+        validators=[MaxValueValidator(CARE_PLAN_MAX_SCORE)]
+    )  # 0-20
+    max_score = models.PositiveIntegerField(default=CARE_PLAN_MAX_SCORE)
     comments = models.TextField(blank=True, null=True)
     assessed_at = models.DateTimeField(auto_now_add=True)
     is_locked = models.BooleanField(default=True)  # Locked after submission
 
     class Meta:
-        unique_together = ("student", "program")
-        ordering = ["-assessed_at"]
+        unique_together = ("student", "program", "slot")
+        ordering = ["slot", "-assessed_at"]
 
     def __str__(self):
-        return f"{self.student} - Care Plan ({self.score}/{self.max_score})"
+        return f"{self.student} - Care Plan {self.slot} ({self.score}/{self.max_score})"
 
     def get_percentage(self):
         return (self.score / self.max_score * 100) if self.max_score > 0 else 0
@@ -319,6 +333,16 @@ class SiteSettings(models.Model):
             "examiner submits it and cannot be changed. "
             "When OFF: any examiner can overwrite a previously submitted care "
             "plan score."
+        ),
+    )
+
+    multiple_care_plans_enabled = models.BooleanField(
+        default=False,
+        verbose_name="Allow a second care plan",
+        help_text=(
+            "When ON: examiners may add a second care plan for eligible students "
+            "(see Care Plan Eligibility). If no eligibility rows exist, all "
+            "programs and levels are eligible."
         ),
     )
 
@@ -355,3 +379,37 @@ class SiteSettings(models.Model):
         """Return the single settings instance, creating it with defaults if needed."""
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+    def allows_second_care_plan(self, student):
+        """True if a second care plan may be added for this student."""
+        if not self.multiple_care_plans_enabled:
+            return False
+        rules = CarePlanEligibility.objects.all()
+        if not rules.exists():
+            return True
+        return rules.filter(program_id=student.program_id).filter(
+            models.Q(level__isnull=True) | models.Q(level_id=student.level_id)
+        ).exists()
+
+
+class CarePlanEligibility(models.Model):
+    """Program/level combinations allowed a second care plan. level=None means all levels."""
+
+    program = models.ForeignKey(
+        Program, on_delete=models.CASCADE, related_name="care_plan_eligibility"
+    )
+    level = models.ForeignKey(
+        Level,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="care_plan_eligibility",
+    )
+
+    class Meta:
+        unique_together = ("program", "level")
+        ordering = ["program_id", "level_id"]
+        verbose_name_plural = "Care Plan Eligibility"
+
+    def __str__(self):
+        return f"{self.program} - {self.level or 'All levels'}"

@@ -2,7 +2,10 @@ from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from .models import (
+    CARE_PLAN_MAX_SCORE,
+    CARE_PLAN_MAX_SLOTS,
     CarePlan,
+    CarePlanEligibility,
     Category,
     Level,
     Procedure,
@@ -23,17 +26,68 @@ User = get_user_model()
 # ─────────────────────────────────────────────
 
 
+class CarePlanEligibilitySerializer(serializers.ModelSerializer):
+    program = serializers.PrimaryKeyRelatedField(queryset=Program.objects.all())
+    level = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(), allow_null=True, required=False
+    )
+    program_name = serializers.SerializerMethodField()
+    level_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CarePlanEligibility
+        fields = ["id", "program", "program_name", "level", "level_name"]
+        read_only_fields = ["id", "program_name", "level_name"]
+
+    def get_program_name(self, obj):
+        return obj.program.abbreviation or obj.program.name
+
+    def get_level_name(self, obj):
+        return obj.level.name if obj.level else "All levels"
+
+
 class SiteSettingsSerializer(serializers.ModelSerializer):
     updated_by_name = serializers.SerializerMethodField()
+    care_plan_eligibility = CarePlanEligibilitySerializer(many=True, required=False)
 
     class Meta:
         model = SiteSettings
         fields = [
             "care_plan_lock_on_submit",
+            "multiple_care_plans_enabled",
+            "care_plan_eligibility",
             "updated_at",
             "updated_by_name",
         ]
         read_only_fields = ["updated_at", "updated_by_name"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["care_plan_eligibility"] = CarePlanEligibilitySerializer(
+            CarePlanEligibility.objects.select_related("program", "level"), many=True
+        ).data
+        return data
+
+    def validate_care_plan_eligibility(self, value):
+        seen = set()
+        for rule in value:
+            key = (rule["program"].pk, rule["level"].pk if rule.get("level") else None)
+            if key in seen:
+                raise serializers.ValidationError("Duplicate program/level entry.")
+            seen.add(key)
+        return value
+
+    def update(self, instance, validated_data):
+        # The eligibility list is replaced wholesale when supplied.
+        rules = validated_data.pop("care_plan_eligibility", None)
+        instance = super().update(instance, validated_data)
+        if rules is not None:
+            CarePlanEligibility.objects.all().delete()
+            CarePlanEligibility.objects.bulk_create(
+                CarePlanEligibility(program=r["program"], level=r.get("level"))
+                for r in rules
+            )
+        return instance
 
     def get_updated_by_name(self, obj):
         if obj.updated_by:
@@ -708,6 +762,7 @@ class CarePlanSerializer(serializers.ModelSerializer):
             "program",
             "examiner",
             "examiner_name",
+            "slot",
             "score",
             "max_score",
             "percentage",
@@ -724,16 +779,23 @@ class CarePlanSerializer(serializers.ModelSerializer):
 class CarePlanCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = CarePlan
-        fields = ["student", "program", "score", "comments"]
+        fields = ["student", "program", "slot", "score", "comments"]
 
     def validate_score(self, value):
-        if not (0 <= value <= 20):
-            raise serializers.ValidationError("Score must be between 0 and 20.")
+        if not (0 <= value <= CARE_PLAN_MAX_SCORE):
+            raise serializers.ValidationError(
+                f"Score must be between 0 and {CARE_PLAN_MAX_SCORE}."
+            )
+        return value
+
+    def validate_slot(self, value):
+        if not (1 <= value <= CARE_PLAN_MAX_SLOTS):
+            raise serializers.ValidationError("Invalid care plan slot.")
         return value
 
     def validate(self, data):
         if CarePlan.objects.filter(
-            student=data["student"], program=data["program"]
+            student=data["student"], program=data["program"], slot=data.get("slot", 1)
         ).exists():
             raise serializers.ValidationError(
                 "Care plan already exists for this student."

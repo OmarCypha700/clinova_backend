@@ -9,3 +9,4 @@ __pycache__/
 /static/
 .vscode/
 *.log
+db.sqlite3.bak-before-0006
