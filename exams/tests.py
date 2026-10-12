@@ -123,6 +123,34 @@ class SecondCarePlanTests(TestCase):
         )
         self.assertEqual(res.data["care_plan_eligibility"], [])
 
+    def test_admin_settings_add_to_existing_eligibility(self):
+        """Saving the full list again (existing rows + a new one) must succeed."""
+        self.client.force_authenticate(self.admin)
+        url = "/api/exams/settings"
+        first = {"program": self.program.id, "level": self.level.id}
+        res = self.client.patch(url, {"care_plan_eligibility": [first]}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        res = self.client.patch(
+            url,
+            {
+                "care_plan_eligibility": [
+                    first,
+                    {"program": self.program.id, "level": self.other_level.id},
+                    {"program": self.other_program.id, "level": None},
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(len(res.data["care_plan_eligibility"]), 3)
+        self.assertEqual(CarePlanEligibility.objects.count(), 3)
+        # Duplicates within the submitted list are still rejected
+        res = self.client.patch(
+            url, {"care_plan_eligibility": [first, first]}, format="json"
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(CarePlanEligibility.objects.count(), 3)
+
     def test_examiner_cannot_patch_settings(self):
         res = self.client.patch(
             "/api/exams/settings", {"multiple_care_plans_enabled": True}, format="json"

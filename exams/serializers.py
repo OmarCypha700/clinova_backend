@@ -38,6 +38,10 @@ class CarePlanEligibilitySerializer(serializers.ModelSerializer):
         model = CarePlanEligibility
         fields = ["id", "program", "program_name", "level", "level_name"]
         read_only_fields = ["id", "program_name", "level_name"]
+        # The list is replaced wholesale on save, so existing rows are re-submitted;
+        # the DB-level unique check would reject them. Duplicates within the
+        # submitted list are caught by SiteSettingsSerializer instead.
+        validators = []
 
     def get_program_name(self, obj):
         return obj.program.abbreviation or obj.program.name
