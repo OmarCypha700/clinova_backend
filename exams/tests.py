@@ -3,7 +3,19 @@ from rest_framework.test import APIClient
 
 from accounts.models import User
 
-from .models import CarePlan, CarePlanEligibility, Level, Program, SiteSettings, Student
+from .models import (
+    CarePlan,
+    CarePlanEligibility,
+    Level,
+    Procedure,
+    ProcedureStep,
+    ProcedureStepScore,
+    Program,
+    ReconciledScore,
+    SiteSettings,
+    Student,
+    StudentProcedure,
+)
 
 
 class SecondCarePlanTests(TestCase):
@@ -116,3 +128,111 @@ class SecondCarePlanTests(TestCase):
             "/api/exams/settings", {"multiple_care_plans_enabled": True}, format="json"
         )
         self.assertEqual(res.status_code, 403)
+
+
+class AdminStudentProcedureTests(TestCase):
+    URL = "/api/exams/admin/student-procedures"
+
+    def setUp(self):
+        self.program = Program.objects.create(name="General Nursing", abbreviation="RGN")
+        self.level = Level.objects.create(number=100, name="Level 100")
+        self.other_level = Level.objects.create(number=200, name="Level 200")
+        self.admin = User.objects.create_user(username="boss", password="x", role="admin")
+        self.ex_a = User.objects.create_user(
+            username="ama", password="x", role="examiner", first_name="Ama", last_name="Mensah"
+        )
+        self.ex_b = User.objects.create_user(username="kofi", password="x", role="examiner")
+        self.procedure = Procedure.objects.create(
+            program=self.program, name="Bed Bath", total_score=8
+        )
+        self.steps = [
+            ProcedureStep.objects.create(procedure=self.procedure, description=f"S{i}", step_order=i)
+            for i in (1, 2)
+        ]
+        self.s1 = Student.objects.create(
+            index_number="A001", full_name="Akua Owusu", program=self.program, level=self.level
+        )
+        self.s2 = Student.objects.create(
+            index_number="B002", full_name="Yaw Boateng", program=self.program, level=self.other_level
+        )
+        self.sp1 = StudentProcedure.objects.create(
+            student=self.s1, procedure=self.procedure, examiner_a=self.ex_a,
+            examiner_b=self.ex_b, status="reconciled", reconciled_by=self.ex_a,
+        )
+        for step, a, b in zip(self.steps, (3, 4), (2, 4)):
+            ProcedureStepScore.objects.create(
+                student_procedure=self.sp1, step=step, examiner=self.ex_a, score=a
+            )
+            ProcedureStepScore.objects.create(
+                student_procedure=self.sp1, step=step, examiner=self.ex_b, score=b
+            )
+            ReconciledScore.objects.create(
+                student_procedure=self.sp1, step=step, score=a, reconciled_by=self.ex_a
+            )
+        self.sp2 = StudentProcedure.objects.create(
+            student=self.s2, procedure=self.procedure, examiner_a=self.ex_b, status="pending"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def test_examiner_forbidden(self):
+        self.client.force_authenticate(self.ex_a)
+        self.assertEqual(self.client.get(self.URL).status_code, 403)
+        self.assertEqual(self.client.delete(f"{self.URL}/{self.sp1.id}").status_code, 403)
+
+    def test_list_totals_and_query_count(self):
+        with self.assertNumQueries(2):  # count + page
+            res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["count"], 2)
+        row = next(r for r in res.data["results"] if r["id"] == self.sp1.id)
+        self.assertEqual(row["examiner_a_score"], 7)
+        self.assertEqual(row["examiner_b_score"], 6)
+        self.assertEqual(row["reconciled_score"], 7)
+        self.assertEqual(row["procedure_max"], 8)
+        self.assertEqual(row["examiner_a_name"], "Ama Mensah")
+        self.assertEqual(row["examiner_b_name"], "kofi")
+        self.assertEqual(row["program_name"], "RGN")
+
+    def test_filters(self):
+        def ids(**params):
+            return {r["id"] for r in self.client.get(self.URL, params).data["results"]}
+
+        self.assertEqual(ids(status="pending"), {self.sp2.id})
+        self.assertEqual(ids(level_id=self.level.id), {self.sp1.id})
+        self.assertEqual(ids(examiner_id=self.ex_a.id), {self.sp1.id})
+        self.assertEqual(ids(examiner_id=self.ex_b.id), {self.sp1.id, self.sp2.id})
+        self.assertEqual(ids(search="boateng"), {self.sp2.id})
+        self.assertEqual(ids(search="mensah"), {self.sp1.id})
+        self.assertEqual(ids(program_id="all", status="all"), {self.sp1.id, self.sp2.id})
+
+    def test_delete_cascades_scores(self):
+        res = self.client.delete(f"{self.URL}/{self.sp1.id}")
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(StudentProcedure.objects.filter(id=self.sp1.id).exists())
+        self.assertEqual(ProcedureStepScore.objects.count(), 0)
+        self.assertEqual(ReconciledScore.objects.count(), 0)
+
+    def test_bulk_delete(self):
+        url = f"{self.URL}/bulk-delete"
+        self.assertEqual(self.client.post(url, {"ids": []}, format="json").status_code, 400)
+        self.assertEqual(
+            self.client.post(url, {"ids": list(range(1, 502))}, format="json").status_code, 400
+        )
+        res = self.client.post(url, {"ids": [self.sp1.id, self.sp2.id]}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["deleted_count"], 2)
+        self.assertEqual(StudentProcedure.objects.count(), 0)
+        self.assertEqual(self.client.post(url, {"ids": [9999]}, format="json").status_code, 404)
+
+    def test_csv_export_respects_filters(self):
+        res = self.client.get(self.URL, {"export": "csv", "status": "reconciled"})
+        self.assertEqual(res.status_code, 200)
+        lines = res.content.decode().strip().splitlines()
+        self.assertEqual(len(lines), 2)  # header + 1 row
+        self.assertIn("A001", lines[1])
+
+    def test_excel_export(self):
+        res = self.client.get(self.URL, {"export": "excel"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("spreadsheetml", res["Content-Type"])

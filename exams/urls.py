@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .views import (AutosaveStepScoreView, BulkDeleteProceduresView,
+from .views import (AdminStudentProcedureViewSet, AutosaveStepScoreView, BulkDeleteProceduresView,
                     BulkDeleteStudentsView, CarePlanView, CategoryDetailView,
                     CategoryListCreateView, DashboardStatsView,
                     DownloadProcedureStepsTemplateView,
@@ -25,6 +25,7 @@ router.register(r'admin/programs', ProgramViewSet, basename='admin-program')
 router.register(r'admin/students', StudentViewSet, basename='admin-student')
 router.register(r'admin/procedures', ProcedureViewSet, basename='admin-procedure')
 router.register(r'admin/procedure-steps', ProcedureStepViewSet, basename='admin-procedure-step')
+router.register(r'admin/student-procedures', AdminStudentProcedureViewSet, basename='admin-student-procedure')
 
 urlpatterns = [
     # Site settings

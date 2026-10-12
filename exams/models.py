@@ -151,6 +151,7 @@ class StudentProcedure(models.Model):
         unique_together = ("student", "procedure")
         indexes = [
             models.Index(fields=["student", "status"]),
+            models.Index(fields=["-assessed_at"], name="sp_assessed_at_desc"),
         ]
 
     def __str__(self):
