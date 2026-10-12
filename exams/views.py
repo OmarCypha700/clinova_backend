@@ -15,7 +15,7 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from rest_framework import filters, status, viewsets
+from rest_framework import filters, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.generics import (
     ListAPIView,
@@ -48,6 +48,7 @@ from .models import (
 )
 from .permissions import IsAdmin, IsExaminer
 from .serializers import (
+    AdminStudentProcedureSerializer,
     CarePlanCreateSerializer,
     CarePlanSerializer,
     CategorySerializer,
@@ -2811,3 +2812,235 @@ class GradeStatsView(APIView):
                 "care_plan_completed": complete_careplan,
             }
         )
+
+
+# ─────────────────────────────────────────────
+# ADMIN: STUDENT PROCEDURES (replaces Django admin StudentProcedure list)
+# ─────────────────────────────────────────────
+
+
+class StudentProcedurePagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
+
+class AdminStudentProcedureViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """
+    GET    /exams/admin/student-procedures              – paginated, filterable list
+           (?export=csv|excel exports the filtered list)
+    DELETE /exams/admin/student-procedures/<id>         – delete one (cascades scores)
+    POST   /exams/admin/student-procedures/bulk-delete  – {ids: [...]}, max 500
+    """
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+    serializer_class = AdminStudentProcedureSerializer
+    pagination_class = StudentProcedurePagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = [
+        "assessed_at",
+        "reconciled_at",
+        "status",
+        "student__index_number",
+        "student__full_name",
+        "procedure__name",
+    ]
+    ordering = ["-assessed_at", "-id"]
+
+    BULK_DELETE_LIMIT = 500
+
+    def get_queryset(self):
+        def examiner_total(examiner_field):
+            return (
+                ProcedureStepScore.objects.filter(
+                    student_procedure=OuterRef("pk"),
+                    examiner=OuterRef(examiner_field),
+                    is_reconciled=False,
+                )
+                .values("student_procedure")
+                .annotate(total=Sum("score"))
+                .values("total")[:1]
+            )
+
+        reconciled_total = (
+            ReconciledScore.objects.filter(student_procedure=OuterRef("pk"))
+            .values("student_procedure")
+            .annotate(total=Sum("score"))
+            .values("total")[:1]
+        )
+
+        qs = StudentProcedure.objects.select_related(
+            "student__program",
+            "student__level",
+            "procedure",
+            "examiner_a",
+            "examiner_b",
+            "assigned_reconciler",
+            "reconciled_by",
+        ).annotate(
+            examiner_a_score=Coalesce(Subquery(examiner_total("examiner_a")), Value(0)),
+            examiner_b_score=Coalesce(Subquery(examiner_total("examiner_b")), Value(0)),
+            reconciled_score=Coalesce(Subquery(reconciled_total), Value(0)),
+        )
+        return self._apply_filters(qs)
+
+    def _apply_filters(self, qs):
+        p = self.request.query_params
+
+        def given(key):
+            value = p.get(key, "").strip()
+            return value if value and value != "all" else None
+
+        if given("status"):
+            qs = qs.filter(status=given("status"))
+        if given("program_id"):
+            qs = qs.filter(student__program_id=given("program_id"))
+        if given("level_id"):
+            qs = qs.filter(student__level_id=given("level_id"))
+        if given("procedure_id"):
+            qs = qs.filter(procedure_id=given("procedure_id"))
+        if given("examiner_id"):
+            examiner_id = given("examiner_id")
+            qs = qs.filter(Q(examiner_a_id=examiner_id) | Q(examiner_b_id=examiner_id))
+        if given("date_from"):
+            qs = qs.filter(assessed_at__date__gte=given("date_from"))
+        if given("date_to"):
+            qs = qs.filter(assessed_at__date__lte=given("date_to"))
+
+        search = p.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(student__index_number__icontains=search)
+                | Q(student__full_name__icontains=search)
+                | Q(procedure__name__icontains=search)
+                | Q(examiner_a__username__icontains=search)
+                | Q(examiner_a__first_name__icontains=search)
+                | Q(examiner_a__last_name__icontains=search)
+                | Q(examiner_b__username__icontains=search)
+                | Q(examiner_b__first_name__icontains=search)
+                | Q(examiner_b__last_name__icontains=search)
+            )
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        export_format = request.query_params.get("export")
+        if export_format:
+            return self._handle_export(export_format)
+        return super().list(request, *args, **kwargs)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        instance.delete()
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    @transaction.atomic
+    def bulk_delete(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "ids must be a non-empty list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(ids) > self.BULK_DELETE_LIMIT:
+            return Response(
+                {"error": f"Cannot delete more than {self.BULK_DELETE_LIMIT} at once"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = StudentProcedure.objects.filter(id__in=ids)
+        count = qs.count()
+        if count == 0:
+            return Response(
+                {"error": "No student procedures found with provided IDs"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        qs.delete()
+        return Response(
+            {
+                "success": True,
+                "deleted_count": count,
+                "message": f"Successfully deleted {count} student procedure(s)",
+            }
+        )
+
+    # ── Export ────────────────────────────────────────────────────────────────
+
+    EXPORT_HEADERS = [
+        "Index Number",
+        "Student Name",
+        "Program",
+        "Level",
+        "Procedure",
+        "Max Score",
+        "Examiner A",
+        "Examiner A Score",
+        "Examiner B",
+        "Examiner B Score",
+        "Status",
+        "Reconciled Score",
+        "Assigned Reconciler",
+        "Reconciled By",
+        "Assessed At",
+        "Reconciled At",
+    ]
+
+    def _export_rows(self):
+        qs = self.filter_queryset(self.get_queryset())
+        for row in AdminStudentProcedureSerializer(qs, many=True).data:
+            yield [
+                row["student_index"],
+                row["student_name"],
+                row["program_name"],
+                row["level_name"],
+                row["procedure_name"],
+                row["procedure_max"],
+                row["examiner_a_name"] or "",
+                row["examiner_a_score"],
+                row["examiner_b_name"] or "",
+                row["examiner_b_score"],
+                row["status"],
+                row["reconciled_score"],
+                row["assigned_reconciler_name"] or "",
+                row["reconciled_by_name"] or "",
+                row["assessed_at"] or "",
+                row["reconciled_at"] or "",
+            ]
+
+    def _handle_export(self, export_format):
+        if export_format == "csv":
+            response = HttpResponse(content_type="text/csv")
+            response["Content-Disposition"] = (
+                'attachment; filename="student_procedures.csv"'
+            )
+            writer = csv.writer(response)
+            writer.writerow(self.EXPORT_HEADERS)
+            for r in self._export_rows():
+                writer.writerow(r)
+            return response
+
+        if export_format == "excel":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Student Procedures"
+            ws.append(self.EXPORT_HEADERS)
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+            for r in self._export_rows():
+                ws.append(r)
+            for col in ws.columns:
+                width = max((len(str(c.value)) for c in col if c.value), default=10)
+                ws.column_dimensions[col[0].column_letter].width = min(width + 2, 50)
+            response = HttpResponse(
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            response["Content-Disposition"] = (
+                'attachment; filename="student_procedures.xlsx"'
+            )
+            wb.save(response)
+            return response
+
+        return Response({"error": "Invalid export format"}, status=400)

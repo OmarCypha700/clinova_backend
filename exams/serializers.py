@@ -801,3 +801,77 @@ class CarePlanCreateSerializer(serializers.ModelSerializer):
                 "Care plan already exists for this student."
             )
         return data
+
+
+# ─────────────────────────────────────────────
+# ADMIN: STUDENT PROCEDURES
+# ─────────────────────────────────────────────
+
+
+def _user_display_name(user):
+    if not user:
+        return None
+    name = user.get_full_name()
+    return name if name.strip() else user.username
+
+
+class AdminStudentProcedureSerializer(serializers.ModelSerializer):
+    """Read-only row for the admin Student Procedures table.
+
+    Score totals come from queryset annotations (see AdminStudentProcedureViewSet).
+    """
+
+    student_index = serializers.CharField(source="student.index_number")
+    student_name = serializers.CharField(source="student.full_name")
+    program_name = serializers.SerializerMethodField()
+    level_name = serializers.CharField(source="student.level.name", default="")
+    procedure_name = serializers.CharField(source="procedure.name")
+    procedure_max = serializers.IntegerField(source="procedure.total_score")
+    examiner_a_name = serializers.SerializerMethodField()
+    examiner_b_name = serializers.SerializerMethodField()
+    assigned_reconciler_name = serializers.SerializerMethodField()
+    reconciled_by_name = serializers.SerializerMethodField()
+    examiner_a_score = serializers.IntegerField()
+    examiner_b_score = serializers.IntegerField()
+    reconciled_score = serializers.IntegerField()
+
+    class Meta:
+        model = StudentProcedure
+        fields = [
+            "id",
+            "student_id",
+            "student_index",
+            "student_name",
+            "program_name",
+            "level_name",
+            "procedure_id",
+            "procedure_name",
+            "procedure_max",
+            "examiner_a_name",
+            "examiner_b_name",
+            "assigned_reconciler_name",
+            "reconciled_by_name",
+            "status",
+            "assessed_at",
+            "reconciled_at",
+            "examiner_a_score",
+            "examiner_b_score",
+            "reconciled_score",
+        ]
+        read_only_fields = fields
+
+    def get_program_name(self, obj):
+        program = obj.student.program
+        return program.abbreviation or program.name
+
+    def get_examiner_a_name(self, obj):
+        return _user_display_name(obj.examiner_a)
+
+    def get_examiner_b_name(self, obj):
+        return _user_display_name(obj.examiner_b)
+
+    def get_assigned_reconciler_name(self, obj):
+        return _user_display_name(obj.assigned_reconciler)
+
+    def get_reconciled_by_name(self, obj):
+        return _user_display_name(obj.reconciled_by)
