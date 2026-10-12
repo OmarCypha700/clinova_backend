@@ -5,6 +5,7 @@ from django.db import transaction
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from openpyxl import Workbook, load_workbook
@@ -14,7 +15,7 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from rest_framework import filters, status, viewsets
+from rest_framework import filters, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.generics import (
     ListAPIView,
@@ -31,6 +32,8 @@ from accounts.models import User
 
 from .filters import StudentFilter
 from .models import (
+    CARE_PLAN_MAX_SCORE,
+    CARE_PLAN_MAX_SLOTS,
     CarePlan,
     Category,
     Level,
@@ -45,6 +48,7 @@ from .models import (
 )
 from .permissions import IsAdmin, IsExaminer
 from .serializers import (
+    AdminStudentProcedureSerializer,
     CarePlanCreateSerializer,
     CarePlanSerializer,
     CategorySerializer,
@@ -252,34 +256,65 @@ class StudentDetailView(RetrieveAPIView):
 
 class CarePlanView(APIView):
     """
-    GET  – return existing care plan or {exists: False}
+    GET  – return the student's care plans (one per slot) and whether a second
+           slot may be added
     POST – submit (or rescore, depending on the care_plan_lock_on_submit flag)
+           the care plan for `slot` (default 1)
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, student_id, program_id):
-        try:
-            care_plan = CarePlan.objects.select_related("examiner").get(
-                student_id=student_id,
-                program_id=program_id,
-            )
-            return Response(CarePlanSerializer(care_plan).data)
-        except CarePlan.DoesNotExist:
-            return Response(
-                {"exists": False, "message": "No care plan found for this student"},
-                status=status.HTTP_200_OK,
-            )
+        student = get_object_or_404(Student, pk=student_id)
+        care_plans = CarePlan.objects.select_related("examiner").filter(
+            student_id=student_id,
+            program_id=program_id,
+        )
+        site_settings = SiteSettings.get()
+        return Response(
+            {
+                "care_plans": CarePlanSerializer(care_plans, many=True).data,
+                "can_add_second": site_settings.allows_second_care_plan(student),
+                "max_slots": CARE_PLAN_MAX_SLOTS,
+                "lock_on_submit": site_settings.care_plan_lock_on_submit,
+            }
+        )
 
     @transaction.atomic
     def post(self, request, student_id, program_id):
         site_settings = SiteSettings.get()
         lock_on_submit = site_settings.care_plan_lock_on_submit
 
+        try:
+            slot = int(request.data.get("slot", 1))
+        except (TypeError, ValueError):
+            slot = 0
+        if not (1 <= slot <= CARE_PLAN_MAX_SLOTS):
+            return Response(
+                {"error": "Invalid care plan slot"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         existing = CarePlan.objects.filter(
             student_id=student_id,
             program_id=program_id,
+            slot=slot,
         ).first()
+
+        if slot > 1 and not existing:
+            student = get_object_or_404(Student, pk=student_id)
+            if not site_settings.allows_second_care_plan(student):
+                return Response(
+                    {"error": "A second care plan is not enabled for this student"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not CarePlan.objects.filter(
+                student_id=student_id, program_id=program_id, slot=1
+            ).exists():
+                return Response(
+                    {"error": "Submit the first care plan before adding another"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         if existing:
             if lock_on_submit:
@@ -299,10 +334,13 @@ class CarePlanView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                score_int = int(score)
-                if not (0 <= score_int <= 20):
+                try:
+                    score_int = int(score)
+                except (TypeError, ValueError):
+                    score_int = -1
+                if not (0 <= score_int <= CARE_PLAN_MAX_SCORE):
                     return Response(
-                        {"error": "Score must be between 0 and 20"},
+                        {"error": f"Score must be between 0 and {CARE_PLAN_MAX_SCORE}"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
@@ -317,10 +355,11 @@ class CarePlanView(APIView):
                     CarePlanSerializer(existing).data, status=status.HTTP_200_OK
                 )
 
-        # No existing care plan — create it
+        # No existing care plan in this slot — create it
         data = request.data.copy()
         data["student"] = student_id
         data["program"] = program_id
+        data["slot"] = slot
 
         serializer = CarePlanCreateSerializer(data=data)
         if serializer.is_valid():
@@ -2531,6 +2570,12 @@ class StudentGradesView(APIView):
             .annotate(total=Sum("max_score"))
             .values("total")[:1]
         )
+        care_count_sq = (
+            CarePlan.objects.filter(student=OuterRef("pk"))
+            .values("student")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
 
         qs = (
             Student.objects.select_related("program", "level")
@@ -2541,6 +2586,7 @@ class StudentGradesView(APIView):
                 reconciled_count=Coalesce(Subquery(procedure_count_sq), Value(0)),
                 care_plan_score=Coalesce(Subquery(care_score_sq), Value(0)),
                 care_plan_max_score=Coalesce(Subquery(care_max_sq), Value(0)),
+                care_plan_count=Coalesce(Subquery(care_count_sq), Value(0)),
             )
         )
 
@@ -2562,8 +2608,10 @@ class StudentGradesView(APIView):
             proc_max = s.procedure_max_score or 0
             cp_score = s.care_plan_score or 0
             cp_max = s.care_plan_max_score or 0
+            cp_count = s.care_plan_count or 0
             total = proc_score + cp_score
-            max_score = proc_max + (cp_max if cp_score > 0 else 0)
+            # A submitted care plan counts toward the max even if it scored 0
+            max_score = proc_max + cp_max
             pct = round((total / max_score * 100), 1) if max_score > 0 else 0.0
             result.append(
                 {
@@ -2578,12 +2626,13 @@ class StudentGradesView(APIView):
                     "procedure_max_score": proc_max,
                     "care_plan_score": cp_score,
                     "care_plan_max_score": cp_max,
+                    "care_plan_count": cp_count,
                     "total_score": round(total, 2),
                     "max_score": max_score,
                     "percentage": pct,
                     "grade": self._calculate_grade(pct),
                     "reconciled_count": s.reconciled_count,
-                    "care_plan_completed": cp_score > 0,
+                    "care_plan_completed": cp_count > 0,
                 }
             )
         return result
@@ -2629,6 +2678,7 @@ class StudentGradesView(APIView):
         "Percentage (%)",
         "Grade",
         "Care Plan Completed",
+        "Care Plans",
     ]
 
     def _row(self, item):
@@ -2640,6 +2690,7 @@ class StudentGradesView(APIView):
             item["percentage"],
             item["grade"],
             item["care_plan_completed"],
+            item["care_plan_count"],
         ]
 
     def _export_csv(self, data):
@@ -2761,3 +2812,235 @@ class GradeStatsView(APIView):
                 "care_plan_completed": complete_careplan,
             }
         )
+
+
+# ─────────────────────────────────────────────
+# ADMIN: STUDENT PROCEDURES (replaces Django admin StudentProcedure list)
+# ─────────────────────────────────────────────
+
+
+class StudentProcedurePagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
+
+class AdminStudentProcedureViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """
+    GET    /exams/admin/student-procedures              – paginated, filterable list
+           (?export=csv|excel exports the filtered list)
+    DELETE /exams/admin/student-procedures/<id>         – delete one (cascades scores)
+    POST   /exams/admin/student-procedures/bulk-delete  – {ids: [...]}, max 500
+    """
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+    serializer_class = AdminStudentProcedureSerializer
+    pagination_class = StudentProcedurePagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = [
+        "assessed_at",
+        "reconciled_at",
+        "status",
+        "student__index_number",
+        "student__full_name",
+        "procedure__name",
+    ]
+    ordering = ["-assessed_at", "-id"]
+
+    BULK_DELETE_LIMIT = 500
+
+    def get_queryset(self):
+        def examiner_total(examiner_field):
+            return (
+                ProcedureStepScore.objects.filter(
+                    student_procedure=OuterRef("pk"),
+                    examiner=OuterRef(examiner_field),
+                    is_reconciled=False,
+                )
+                .values("student_procedure")
+                .annotate(total=Sum("score"))
+                .values("total")[:1]
+            )
+
+        reconciled_total = (
+            ReconciledScore.objects.filter(student_procedure=OuterRef("pk"))
+            .values("student_procedure")
+            .annotate(total=Sum("score"))
+            .values("total")[:1]
+        )
+
+        qs = StudentProcedure.objects.select_related(
+            "student__program",
+            "student__level",
+            "procedure",
+            "examiner_a",
+            "examiner_b",
+            "assigned_reconciler",
+            "reconciled_by",
+        ).annotate(
+            examiner_a_score=Coalesce(Subquery(examiner_total("examiner_a")), Value(0)),
+            examiner_b_score=Coalesce(Subquery(examiner_total("examiner_b")), Value(0)),
+            reconciled_score=Coalesce(Subquery(reconciled_total), Value(0)),
+        )
+        return self._apply_filters(qs)
+
+    def _apply_filters(self, qs):
+        p = self.request.query_params
+
+        def given(key):
+            value = p.get(key, "").strip()
+            return value if value and value != "all" else None
+
+        if given("status"):
+            qs = qs.filter(status=given("status"))
+        if given("program_id"):
+            qs = qs.filter(student__program_id=given("program_id"))
+        if given("level_id"):
+            qs = qs.filter(student__level_id=given("level_id"))
+        if given("procedure_id"):
+            qs = qs.filter(procedure_id=given("procedure_id"))
+        if given("examiner_id"):
+            examiner_id = given("examiner_id")
+            qs = qs.filter(Q(examiner_a_id=examiner_id) | Q(examiner_b_id=examiner_id))
+        if given("date_from"):
+            qs = qs.filter(assessed_at__date__gte=given("date_from"))
+        if given("date_to"):
+            qs = qs.filter(assessed_at__date__lte=given("date_to"))
+
+        search = p.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(student__index_number__icontains=search)
+                | Q(student__full_name__icontains=search)
+                | Q(procedure__name__icontains=search)
+                | Q(examiner_a__username__icontains=search)
+                | Q(examiner_a__first_name__icontains=search)
+                | Q(examiner_a__last_name__icontains=search)
+                | Q(examiner_b__username__icontains=search)
+                | Q(examiner_b__first_name__icontains=search)
+                | Q(examiner_b__last_name__icontains=search)
+            )
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        export_format = request.query_params.get("export")
+        if export_format:
+            return self._handle_export(export_format)
+        return super().list(request, *args, **kwargs)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        instance.delete()
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    @transaction.atomic
+    def bulk_delete(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "ids must be a non-empty list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(ids) > self.BULK_DELETE_LIMIT:
+            return Response(
+                {"error": f"Cannot delete more than {self.BULK_DELETE_LIMIT} at once"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = StudentProcedure.objects.filter(id__in=ids)
+        count = qs.count()
+        if count == 0:
+            return Response(
+                {"error": "No student procedures found with provided IDs"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        qs.delete()
+        return Response(
+            {
+                "success": True,
+                "deleted_count": count,
+                "message": f"Successfully deleted {count} student procedure(s)",
+            }
+        )
+
+    # ── Export ────────────────────────────────────────────────────────────────
+
+    EXPORT_HEADERS = [
+        "Index Number",
+        "Student Name",
+        "Program",
+        "Level",
+        "Procedure",
+        "Max Score",
+        "Examiner A",
+        "Examiner A Score",
+        "Examiner B",
+        "Examiner B Score",
+        "Status",
+        "Reconciled Score",
+        "Assigned Reconciler",
+        "Reconciled By",
+        "Assessed At",
+        "Reconciled At",
+    ]
+
+    def _export_rows(self):
+        qs = self.filter_queryset(self.get_queryset())
+        for row in AdminStudentProcedureSerializer(qs, many=True).data:
+            yield [
+                row["student_index"],
+                row["student_name"],
+                row["program_name"],
+                row["level_name"],
+                row["procedure_name"],
+                row["procedure_max"],
+                row["examiner_a_name"] or "",
+                row["examiner_a_score"],
+                row["examiner_b_name"] or "",
+                row["examiner_b_score"],
+                row["status"],
+                row["reconciled_score"],
+                row["assigned_reconciler_name"] or "",
+                row["reconciled_by_name"] or "",
+                row["assessed_at"] or "",
+                row["reconciled_at"] or "",
+            ]
+
+    def _handle_export(self, export_format):
+        if export_format == "csv":
+            response = HttpResponse(content_type="text/csv")
+            response["Content-Disposition"] = (
+                'attachment; filename="student_procedures.csv"'
+            )
+            writer = csv.writer(response)
+            writer.writerow(self.EXPORT_HEADERS)
+            for r in self._export_rows():
+                writer.writerow(r)
+            return response
+
+        if export_format == "excel":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Student Procedures"
+            ws.append(self.EXPORT_HEADERS)
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+            for r in self._export_rows():
+                ws.append(r)
+            for col in ws.columns:
+                width = max((len(str(c.value)) for c in col if c.value), default=10)
+                ws.column_dimensions[col[0].column_letter].width = min(width + 2, 50)
+            response = HttpResponse(
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            response["Content-Disposition"] = (
+                'attachment; filename="student_procedures.xlsx"'
+            )
+            wb.save(response)
+            return response
+
+        return Response({"error": "Invalid export format"}, status=400)
