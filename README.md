@@ -1,520 +1,335 @@
-# ClinOva - Nursing Practical Assessment App
+# ClinOva — Backend API
 
-**Backend API for a Nursing Practical Assessment Application**
+REST API for **ClinOva**, a clinical practical assessment platform for nursing and midwifery training colleges. It replaces paper scoring sheets with a dual-examiner digital workflow: two examiners independently score a clinical procedure, then one of them reconciles the results into a single official score.
 
-ClinOva is a comprehensive Django REST Framework-based backend system designed to streamline and digitize practical assessments at nursing training colleges. The platform enables efficient evaluation of nursing students' procedural competencies through a structured, multi-examiner assessment process with reconciliation workflows.
+Built with **Django** and **Django REST Framework**. The companion web app lives in the ClinOva frontend repository.
+
+> **Confidentiality note.** This document intentionally covers setup and operation only. Security configuration, authorization rules and the detailed API specification are not reproduced here — read the source, or the private internal documentation, if you are authorized to. Do not copy internal details from this repository into public issues, forums or chat tools.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Key Features](#key-features)
+- [Features](#features)
 - [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
 - [Project Structure](#project-structure)
-- [Installation](#installation)
+- [Getting Started](#getting-started)
 - [Configuration](#configuration)
-- [Database Setup](#database-setup)
-- [Running the Application](#running-the-application)
-- [API Endpoints](#api-endpoints)
+- [Security](#security)
+- [Domain Overview](#domain-overview)
+- [API Overview](#api-overview)
+- [Bulk Import & Export](#bulk-import--export)
 - [Management Commands](#management-commands)
-- [User Roles](#user-roles)
-- [Data Models](#data-models)
-- [Development Notes](#development-notes)
+- [Deployment](#deployment)
+- [Backups](#backups)
+- [Testing & Quality Checks](#testing--quality-checks)
+- [Troubleshooting](#troubleshooting)
+- [Known Limitations](#known-limitations)
+- [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
-## Overview
+## Features
 
-ClinOva addresses the challenges of traditional paper-based nursing practical assessments by providing:
-
-- **Digital Assessment Platform**: Replace manual grading sheets with a modern, digital interface
-- **Multi-Examiner Workflow**: Support simultaneous assessment by two independent examiners with built-in reconciliation
-- **Procedural Tracking**: Organize and score individual steps within complex nursing procedures
-- **Data Management**: Import/export student and procedure data efficiently
-- **Reconciliation System**: Manage discrepancies between examiner scores through a dedicated reconciliation process
-- **Student Programs**: Support multiple nursing programs (e.g., RN, PN) with level-based organization (100-400 levels)
-
----
-
-## Key Features
-
-### Core Functionality
-
-- **Student Management**: Track nursing students by program, level, and index number
-- **Procedure Library**: Define nursing procedures with detailed steps and scoring criteria
-- **Dual Examiner Assessment**: Assign two examiners per procedure to ensure objective evaluation
-- **Step-Based Scoring**: Score individual procedure steps rather than entire procedures
-- **Reconciliation Workflow**: Compare examiner scores and resolve discrepancies
-- **Care Plan Tracking**: Document care plans associated with student procedures
-- **Role-Based Access**: Admin and Examiner roles with appropriate permissions
-
-### Data Management
-
-- **Bulk Import/Export**: Import student and procedure data via Excel/CSV templates
-- **Data Export Formats**: Export assessment data as CSV, Excel, or PDF reports
-- **Template Generation**: Auto-generate import templates for consistent data formatting
-- **Complete Data Backup**: Export and import entire datasets for backup/migration
+- Dual-examiner, step-based scoring of clinical procedures, with autosave
+- Reconciliation of the two examiners' scores into one official result
+- Care plan assessment
+- Programs, academic levels, students and a procedure library
+- Procedure **categories** (e.g. basic vs. advanced procedures) so examiners can narrow down before scoring
+- Per-examiner "My Assessments" tracking by status
+- Role-based access for administrators and examiners
+- Bulk import (Excel / CSV) and export (CSV / Excel / PDF), grades reporting and dashboard statistics
+- Django admin site for low-level data access
 
 ---
 
 ## Tech Stack
 
-### Backend Framework
-- **Django 4.2.16**: Python web framework
-- **Django REST Framework 3.16.0**: REST API toolkit
-- **Django CORS Headers 4.7.0**: Cross-Origin Resource Sharing support
+| Area | Technology |
+|------|------------|
+| Language | Python 3.12+ |
+| Framework | Django 6, Django REST Framework 3 |
+| Authentication | Token-based, delivered in HttpOnly cookies |
+| Admin UI | `django-unfold`, `django-import-export` |
+| Spreadsheets / PDF | `openpyxl`, `reportlab` |
+| Database | SQLite |
 
-### Authentication & Authorization
-- **Simple JWT 5.5.0**: JWT token-based authentication
-- **Django built-in**: User authentication and permissions
+Pinned dependency versions are in `requirements.txt`. Keep them current and review dependency advisories regularly.
 
-### Database
-- **SQLite3** (Development): Default database
-- **MySQL** (Optional): Configure via environment variables
-- **PostgreSQL** (Optional): Configure via environment variables
+---
 
-### Data Processing & Export
-- **openpyxl 3.1.5**: Excel file handling
-- **reportlab 4.4.7**: PDF generation
-- **django-import-export 4.3.14**: Data import/export utilities
-- **tablib 3.9.0**: Tabular data handling
-- **python-dotenv 1.1.0**: Environment variable management
+## Architecture
 
-### Database Drivers
-- **mysqlclient 2.2.7**: MySQL Python adapter
-- **psycopg2-binary 2.9.10**: PostgreSQL Python adapter
+```
+Browser ──▶ Web app (Next.js) ──/api──▶ This API ──▶ Database
+```
 
+The web app forwards its API calls to this service, so browsers talk to a single origin. You can also call the API directly for development and testing.
 
 ---
 
 ## Project Structure
 
 ```
-d:/Nursing Practical App Backend/
-├── manage.py                          # Django management script
-├── requirements.txt                   # Python dependencies
-├── db.sqlite3                         # SQLite database
-├── README.md                          # This file
-│
-├── nursing_practical/                 # Project configuration
-│   ├── settings.py                    # Django settings
-│   ├── urls.py                        # Main URL router
-│   ├── wsgi.py                        # WSGI configuration
-│   └── asgi.py                        # ASGI configuration
-│
-├── accounts/                          # User authentication app
-│   ├── models.py                      # User model (extends AbstractUser)
-│   ├── views.py                       # Authentication views (Login, Logout, etc.)
-│   ├── serializers.py                 # User serializers
-│   ├── urls.py                        # Authentication endpoints
-│   ├── admin.py                       # Admin configuration
-│   └── migrations/                    # Database migrations
-│
-├── exams/                             # Assessment app (core)
-│   ├── models.py                      # Data models (Program, Student, Procedure, etc.)
-│   ├── views.py                       # API views for assessment
-│   ├── serializers.py                 # Model serializers
-│   ├── urls.py                        # Assessment endpoints
-│   ├── admin.py                       # Admin configuration
-│   ├── management/
-│   │   └── commands/                  # Custom management commands
-│   │       ├── create_import_template.py       # Generate import templates
-│   │       ├── import_data.py                  # Bulk import data
-│   │       ├── import_complete_data.py         # Full dataset import
-│   │       ├── export_all_data.py              # Export all data
-│   │       └── export_complete_data.py         # Full dataset export
-│   └── migrations/                    # Database migrations
-│
-└── static/                            # Static files directory
+.
+├── manage.py
+├── requirements.txt
+├── nursing_practical/   # Project configuration
+├── accounts/            # Users and authentication
+└── exams/               # Assessment domain (models, API, admin, commands)
 ```
 
 ---
 
-## Installation
+## Getting Started
 
 ### Prerequisites
 
-- **Python 3.8+**
-- **pip** (Python package manager)
-- **Git**
-- **Virtual Environment** (recommended)
+- Python **3.12 or newer**
+- Git
 
-### Step 1: Clone the Repository
+### 1. Clone and create a virtual environment
 
 ```bash
 git clone <repository-url>
-cd "Nursing Practical App Backend"
+cd <repository-folder>
+
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-### Step 2: Create Virtual Environment
-
-```bash
-# On Windows
-python -m venv venv
-venv\Scripts\activate
-
-# On macOS/Linux
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### Step 3: Install Dependencies
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+### 3. Configure the environment
 
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file in the project root directory:
+Create a `.env` file in the project root. It is git-ignored — **never commit it**.
 
 ```env
-# Django Security
-DJANGO_SECRET_KEY=your-secret-key-here
+DJANGO_SECRET_KEY=<generate a unique value>
+DEBUG=True
 
-# Database Configuration
-DB_ENGINE=django.db.backends.sqlite3
-# Alternatively for MySQL:
-# DB_ENGINE=django.db.backends.mysql
-# DB_NAME=nursing_practical
-# DB_USER=root
-# DB_PASSWORD=password
-# DB_HOST=localhost
-# DB_PORT=3306
-
-# Allowed Hosts
-BACKEND_URL=example.com
-BACKEND_DEV_URL=127.0.0.1:8000
-FRONTEND_URL=https://example.com
 FRONTEND_DEV_URL=http://localhost:3000
-LOCALHOST=127.0.0.1
+BACKEND_DEV_URL=127.0.0.1
+LOCALHOST=localhost
 ```
 
-### Generate Django Secret Key
+Generate a secret key:
 
 ```bash
-python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'
+python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 ```
 
----
+`DEBUG=True` is for **local development only**. Production settings are described under [Deployment](#deployment).
 
-## Database Setup
-
-### Step 1: Create Migrations
-
-```bash
-python manage.py makemigrations
-```
-
-### Step 2: Apply Migrations
+### 4. Create the database
 
 ```bash
 python manage.py migrate
 ```
 
-### Step 3: Create Superuser (Admin Account)
+### 5. Create an administrator
 
 ```bash
 python manage.py createsuperuser
 ```
 
-You will be prompted to enter:
-- **Username**: Your admin username
-- **Email**: Your email address
-- **Password**: Your secure password
-
-### Step 4: Load Initial Data (Optional)
-
-If you have existing data in export format:
+Then give the account the application **admin** role — `createsuperuser` alone does not, and without it the account cannot use the web app's admin features:
 
 ```bash
-python manage.py import_complete_data <file_path>
+python manage.py shell -c "from accounts.models import User; User.objects.filter(username='<your-username>').update(role='admin')"
 ```
 
----
+Examiner accounts are created from the web app's admin area (or imported) and must have the **examiner** role.
 
-## Running the Application
-
-### Development Server
+### 6. Run the server
 
 ```bash
 python manage.py runserver
 ```
 
-The API will be available at: `http://127.0.0.1:8000/`
-
-### Access Admin Panel
-
-Navigate to: `http://127.0.0.1:8000/admin/`
-
-Use your superuser credentials to log in.
-
-### Production Deployment
-
-For production deployment, use a production-grade server (Gunicorn, uWSGI) and configure proper security settings in `settings.py`.
+Start the web app next and point its `API_DESTINATION` at this server.
 
 ---
 
-## API Endpoints
+## Configuration
 
-### Authentication Endpoints
+Settings are read from environment variables (via `.env`).
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/accounts/login/` | User login (returns JWT tokens) |
-| POST | `/api/accounts/logout/` | User logout |
-| POST | `/api/accounts/change-password/` | Change user password |
-| GET | `/api/accounts/examiners/` | List all examiners |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DJANGO_SECRET_KEY` | **Yes** | Unique, long, random secret. Never commit or share it. Rotating it signs everyone out. |
+| `DEBUG` | No (default off) | Local development only. **Must be off in production.** |
+| `FRONTEND_URL` | Production | Public origin of the web app (allowed for cross-origin requests). |
+| `FRONTEND_DEV_URL` | Local | Local web app origin. |
+| `BACKEND_URL` | Production | Public **hostname** of this API (no scheme, no port). |
+| `BACKEND_DEV_URL` | Local | Local hostname. |
+| `LOCALHOST` | Local | Additional allowed local hostname. |
 
-### Program Endpoints
+Host variables take **bare hostnames** (no `http://`, no port). Any other variables present in a `.env` file are ignored.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/exams/programs/` | List all programs |
-| POST | `/api/exams/programs/` | Create new program (Admin only) |
+---
 
-### Student Endpoints
+## Security
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/exams/programs/<id>/students/` | List students by program |
-| POST | `/api/exams/students/` | Create new student (Admin only) |
-| GET | `/api/exams/students/<id>/` | Student details |
+- **Secrets** live only in environment variables or a secrets manager — never in source control, tickets or chat. Use a different `DJANGO_SECRET_KEY` for every environment.
+- **Production requires** `DEBUG` off, HTTPS everywhere, and restricted `BACKEND_URL` / `FRONTEND_URL` values.
+- **Least privilege:** give people the lowest role they need; deactivate accounts of people who leave. Set strong, unique passwords for every account and require examiners to change any temporary password on first use.
+- **Restrict the Django admin site** in production (network allow-list, VPN or reverse-proxy rules) and limit it to a small number of trusted staff.
+- **Authorization is enforced by the API**, not by the web app. Do not treat hidden UI as a security control.
+- **Protect data at rest and in backups:** the database and any exports contain student and assessment records. Encrypt backups, restrict access, and delete exports you no longer need.
+- **Keep dependencies patched** and re-run the checks under [Testing & Quality Checks](#testing--quality-checks) after upgrades.
+- **Reporting a vulnerability:** do **not** open a public issue. Contact the maintainers privately with the details.
 
-### Procedure Endpoints
+---
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/exams/programs/<id>/procedures/` | List procedures by program |
-| POST | `/api/exams/procedures/` | Create procedure (Admin only) |
-| GET | `/api/exams/procedures/<id>/` | Procedure details with steps |
+## Domain Overview
 
-### Assessment Endpoints
+The main concepts are: **programs**, **levels**, **students**, **procedures** (made of ordered **steps**, optionally grouped into **categories**), **assessments** of a student on a procedure, examiners' **scores** and the final **reconciled score**, and **care plans**.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET/POST | `/api/exams/assessments/` | List or create assessments |
-| PUT | `/api/exams/assessments/<id>/score/` | Score procedure steps |
-| POST | `/api/exams/assessments/<id>/reconcile/` | Reconcile examiner scores |
+In short: two different examiners score the same procedure independently; when both have finished, the examiner who finished last reconciles the two score sheets into the official result, which is then locked.
 
-### Dashboard Endpoints
+---
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/exams/dashboard/` | Get dashboard statistics |
+## API Overview
+
+The API is served under `/api/` and is split into an authentication area and an assessment area. All endpoints require authentication except login. Some capabilities are restricted to administrators.
+
+- Endpoint definitions: `accounts/urls.py`, `exams/urls.py`
+- Permission rules: `exams/permissions.py` and the views themselves
+- List endpoints are paginated; most accept search and filter query parameters
+- Routes are registered **without a trailing slash** (call `/api/exams/programs`, not `/api/exams/programs/`)
+
+A full endpoint reference is intentionally not published in this README. Maintain it in private documentation if your team needs one.
+
+---
+
+## Bulk Import & Export
+
+Always start from the current template (available in the web app's admin area) rather than writing files by hand. Files may be Excel or CSV (UTF-8). Imports run in a transaction and report per-row errors.
+
+- **Students, procedures, steps and examiners** can be imported from templates.
+- **Procedure categories** can be supplied per procedure; unknown names are created automatically, and a blank category leaves an existing procedure's category unchanged.
+- **New examiners:** if a password is not supplied, a unique random temporary password is generated and shown **once** in the import result. It cannot be retrieved later — record it securely, share it privately, and require a change at first login.
+- Imported files and exports contain personal data: store them securely and delete them when no longer needed.
 
 ---
 
 ## Management Commands
 
-### Import/Export Data
+Run `python manage.py <command> --help` for options.
 
-#### Generate Import Template
+| Command | Purpose |
+|---------|---------|
+| `create_import_template` | Generate sample import templates |
+| `import_data` | Import reference data from separate files |
+| `export_all_data` | Export reference data |
+| `export_complete_data` | Export reference data to one multi-sheet Excel file |
+| `import_complete_data` | Import that Excel file (supports `--dry-run`) |
 
-```bash
-python manage.py create_import_template
-```
-
-Creates CSV/Excel templates for importing students and procedures.
-
-#### Import Student and Procedure Data
-
-```bash
-python manage.py import_data <file_path>
-```
-
-#### Complete Data Import
-
-```bash
-python manage.py import_complete_data <file_path>
-```
-
-#### Export All Data
-
-```bash
-python manage.py export_all_data
-```
-
-Exports all students, procedures, and assessment data.
-
-#### Export Complete Data
-
-```bash
-python manage.py export_complete_data
-```
-
-Creates a backup of the entire database in exportable format.
+> These cover **reference data only** (programs, students, procedures, steps). They do not include examiners, assessments, scores, care plans or categories, and are **not** a backup mechanism — see [Backups](#backups).
 
 ---
 
-## User Roles
+## Deployment
 
-### Admin
+1. **Environment** — `DEBUG` off, a unique `DJANGO_SECRET_KEY`, correct `BACKEND_URL` / `FRONTEND_URL`.
+2. **HTTPS** — required. If TLS is terminated at a reverse proxy, make sure the proxy is configured correctly for this application.
+3. **Install and migrate**
+   ```bash
+   pip install -r requirements.txt
+   python manage.py migrate
+   python manage.py collectstatic --noinput
+   ```
+4. **Serve with a production WSGI server** behind a reverse proxy — never `runserver`.
+5. **Run the deployment check** and resolve its warnings:
+   ```bash
+   python manage.py check --deploy
+   ```
+6. **Create the first admin** and set its role (see [Getting Started](#5-create-an-administrator)).
+7. **Verify end to end** from the web app before an exam period.
 
-**Permissions:**
-- Create, read, update, delete users
-- Manage programs and procedures
-- Import/export data
-- View all assessments and reconciliations
-- Access admin panel
-
-**Typical Users:** Department coordinators, academic administrators
-
-### Examiner
-
-**Permissions:**
-- View assigned students and procedures
-- Score procedure steps during assessments
-- View reconciliation requests
-- Participate in score reconciliation
-
-**Typical Users:** Faculty members, clinical instructors, assessors
+**Upgrades:** back up first, then run `python manage.py migrate` after pulling. Schema changes ship as migrations in each app's `migrations/` folder.
 
 ---
 
-## Data Models
+## Backups
 
-### User
+The database contains student and assessment records — treat every copy as sensitive.
 
-Extends Django's `AbstractUser` with:
-- **Role**: admin or examiner
-- **is_active**: User account status
-
-### Program
-
-- **name**: Nursing program name (e.g., "RN 3-Year", "PN")
-- **abbreviation**: Short form (e.g., "RN", "PN")
-
-### Student
-
-- **index_number**: Unique student identifier
-- **full_name**: Student full name
-- **program**: Foreign key to Program
-- **level**: Academic level (100, 200, 300, 400)
-- **is_active**: Enrollment status
-
-### Procedure
-
-- **program**: Nursing procedure belongs to specific program
-- **name**: Procedure name (e.g., "Catheterization", "IV Insertion")
-- **total_score**: Maximum score for procedure
-
-### ProcedureStep
-
-- **procedure**: Parent procedure
-- **description**: Step description
-- **step_order**: Sequence number
-
-### StudentProcedure
-
-- **student**: Student being assessed
-- **procedure**: Procedure being assessed
-- **examiner_a**: First examiner
-- **examiner_b**: Second examiner
-- **status**: pending, scored, or reconciled
-- **reconciled_by**: User who reconciled scores
-- **assigned_reconciler**: Designated reconciler (optional)
-
-### ProcedureStepScore
-
-- **student_procedure**: Parent assessment
-- **procedure_step**: Step being scored
-- **examiner**: Scoring examiner
-- **score**: Numeric score (0 or 1 for pass/fail)
-
-### ReconciledScore
-
-- **student_procedure**: Assessment being reconciled
-- **procedure_step**: Step reconciliation
-- **score**: Final reconciled score
-
-### CarePlan
-
-- **student**: Associated student
-- **procedure**: Related procedure
-- **care_plan**: Care plan documentation
-- **created_at**: Creation timestamp
+- Use the database's online backup rather than copying the file while the app is running. For SQLite:
+  ```bash
+  sqlite3 <database-file> ".backup '<backup-file>'"
+  ```
+- For a portable dump:
+  ```bash
+  python manage.py dumpdata --natural-foreign --exclude contenttypes --exclude auth.permission --exclude sessions > backup.json
+  ```
+- Encrypt backups, store them off the server with restricted access, and schedule them around exam periods.
+- **Test a restore** at least once.
 
 ---
 
-## Development Notes
+## Testing & Quality Checks
 
-### Adding New Procedures
+There is no automated test suite yet. Before every release run:
 
-1. Go to admin panel: `/admin/`
-2. Navigate to Procedures
-3. Create new procedure and add steps
-4. Assign to program
-
-### Creating Assessments Programmatically
-
-```python
-from exams.models import StudentProcedure, Student, Procedure, User
-
-student = Student.objects.get(index_number="12345")
-procedure = Procedure.objects.get(id=1)
-examiner_a = User.objects.get(username="examiner1")
-examiner_b = User.objects.get(username="examiner2")
-
-assessment = StudentProcedure.objects.create(
-    student=student,
-    procedure=procedure,
-    examiner_a=examiner_a,
-    examiner_b=examiner_b
-)
+```bash
+python manage.py check
+python manage.py makemigrations --check --dry-run
+python manage.py migrate --plan
 ```
 
-### API Response Format
-
-All API responses follow a consistent format:
-
-```json
-{
-  "status": "success",
-  "data": {},
-  "message": "Optional message"
-}
-```
-
-### JWT Authentication
-
-Include the JWT token in request headers:
-
-```
-Authorization: Bearer <access_token>
-```
-
-### Common Issues
-
-1. **CORS Errors**: Ensure `CORS_ALLOWED_ORIGINS` is configured in `settings.py`
-2. **Database Errors**: Run `python manage.py migrate` after schema changes
-3. **Import Errors**: Verify all dependencies in `requirements.txt` are installed
-4. **Authentication Failures**: Ensure user role is set to "examiner" or "admin"
+When adding tests, use `python manage.py test`; it uses a throw-away database and never touches your real data.
 
 ---
 
-## Future Enhancements
+## Troubleshooting
 
-- [ ] Mobile app for offline assessment
+| Symptom | Likely cause / fix |
+|---------|--------------------|
+| Error about `SECRET_KEY` on start | `DJANGO_SECRET_KEY` is missing from `.env`. |
+| Redirected to `https://` locally, or login does not persist | `DEBUG` is off. Turn it on for local HTTP development only. |
+| `DisallowedHost` | Set the host variables to bare hostnames (no scheme, no port). |
+| Requests fail with `401` after login | Requests are not reaching the API through the web app's proxy, or HTTPS is not used in production. |
+| Cross-origin (CORS) error | The web app's origin is not configured. |
+| `404` calling an endpoint directly | Remove the trailing slash. |
+| `429 Too Many Requests` | Rate limiting is active; wait and retry. |
+| Admin user is redirected away in the web app | The account has not been given the admin role — see [Getting Started](#5-create-an-administrator). |
+| `no such table` / `no such column` | Run `python manage.py migrate`. |
+| `database is locked` | Another process holds a write lock; avoid heavy imports during live scoring. |
+
+---
+
+## Known Limitations
+
+- Uses SQLite; other database drivers are installed but not configured. Suitable for a single-server deployment.
+- The data import/export commands are partial and not a backup mechanism.
+- No automated test suite yet.
+
+---
+
+## Roadmap
+
+- [ ] Mobile-friendly offline scoring
 - [ ] Real-time collaboration between examiners
 - [ ] Advanced reporting and analytics
-- [ ] Automated score reconciliation suggestions
+- [ ] Reconciliation suggestions for score discrepancies
 - [ ] Email notifications for examiners
-- [ ] Audit logging for all assessments
+- [ ] Audit logging for assessments
 
 ---
 
 ## License
 
-This project is currently in development and will be made private soon.
-
----
-
-## Support
-
-For issues, questions, or contributions, please contact the development team or create an issue in the repository.
+No license file is currently included. Until one is added, all rights are reserved by the project maintainers.

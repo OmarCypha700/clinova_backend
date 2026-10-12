@@ -7,6 +7,8 @@ from unfold.paginator import InfinitePaginator
 
 from .models import (
     CarePlan,
+    CarePlanEligibility,
+    Category,
     Procedure,
     ProcedureStep,
     ProcedureStepScore,
@@ -64,11 +66,16 @@ class ProcedureResource(resources.ModelResource):
         attribute="program",
         widget=widgets.ForeignKeyWidget(Program, "name"),
     )
+    category_name = fields.Field(
+        column_name="category_name",
+        attribute="category",
+        widget=widgets.ForeignKeyWidget(Category, "name"),
+    )
 
     class Meta:
         model = Procedure
-        fields = ("id", "program_name", "name", "total_score")
-        export_order = ("id", "program_name", "name", "total_score")
+        fields = ("id", "program_name", "name", "total_score", "category_name")
+        export_order = ("id", "program_name", "name", "total_score", "category_name")
         import_id_fields = ["program_name", "name"]
 
 
@@ -125,6 +132,11 @@ class StudentProcedureResource(resources.ModelResource):
         attribute="student",
         widget=widgets.ForeignKeyWidget(Student, "index_number"),
     )
+    student__full_name = fields.Field(
+        column_name="student_full_name",
+        attribute="student",
+        widget=widgets.ForeignKeyWidget(Student, "full_name"),
+    )
     procedure_name = fields.Field(
         column_name="procedure_name",
         attribute="procedure",
@@ -142,6 +154,7 @@ class StudentProcedureResource(resources.ModelResource):
         fields = (
             "id",
             "student_index",
+            "student__full_name",
             "procedure_name",
             "examiner_a_username",
             "examiner_b_username",
@@ -151,6 +164,7 @@ class StudentProcedureResource(resources.ModelResource):
         export_order = (
             "id",
             "student_index",
+            "student__full_name",
             "procedure_name",
             "examiner_a_username",
             "examiner_b_username",
@@ -190,13 +204,24 @@ class ProcedureStepInline(admin.TabularInline):
     ordering = ("step_order",)
 
 
+@admin.register(Category)
+class CategoryAdmin(ModelAdmin):
+    list_display = ("name", "get_procedures_count")
+    search_fields = ("name",)
+
+    def get_procedures_count(self, obj):
+        return obj.procedures.count()
+
+    get_procedures_count.short_description = "Procedures"
+
+
 @admin.register(Procedure)
 class ProcedureAdmin(ModelAdmin, ImportExportModelAdmin):
     import_form_class = ImportForm
     export_form_class = ExportForm
     resource_class = ProcedureResource
-    list_display = ("name", "program", "total_score", "get_steps_count")
-    list_filter = ("program",)
+    list_display = ("name", "program", "category", "total_score", "get_steps_count")
+    list_filter = ("program", "category")
     search_fields = ("name",)
     inlines = [ProcedureStepInline]
 
@@ -240,8 +265,23 @@ class StudentProcedureAdmin(ModelAdmin, ImportExportModelAdmin, ExportActionMixi
         "reconciled_by",
         "assessed_at",
     )
-    list_filter = ("status", "procedure", "assessed_at")
-    search_fields = ("student__index_number", "student__full_name", "procedure__name")
+    list_filter = (
+        "status",
+        "procedure",
+        "assessed_at",
+        "reconciled_by",
+    )
+    search_fields = (
+        "student__index_number",
+        "student__full_name",
+        "procedure__name",
+        "examiner_a__username",
+        "examiner_a__first_name",
+        "examiner_a__last_name",
+        "examiner_b__username",
+        "examiner_b__first_name",
+        "examiner_b__last_name",
+    )
     date_hierarchy = "assessed_at"
     readonly_fields = ("assigned_reconciler",)
 
@@ -290,12 +330,13 @@ class CarePlanAdmin(ModelAdmin):
         "student",
         "program",
         "examiner",
+        "slot",
         "score",
         "max_score",
         "assessed_at",
         "is_locked",
     )
-    list_filter = ("program", "is_locked", "assessed_at")
+    list_filter = ("program", "slot", "is_locked", "assessed_at")
     search_fields = (
         "student__index_number",
         "student__full_name",
@@ -303,3 +344,9 @@ class CarePlanAdmin(ModelAdmin):
     )
     date_hierarchy = "assessed_at"
     readonly_fields = ("assessed_at",)
+
+
+@admin.register(CarePlanEligibility)
+class CarePlanEligibilityAdmin(ModelAdmin):
+    list_display = ("program", "level")
+    list_filter = ("program", "level")
