@@ -1,4 +1,8 @@
+import csv
+import io
+
 from django.test import TestCase
+from openpyxl import Workbook, load_workbook
 from rest_framework.test import APIClient
 
 from accounts.models import User
@@ -6,6 +10,7 @@ from accounts.models import User
 from .models import (
     CarePlan,
     CarePlanEligibility,
+    Category,
     Level,
     Procedure,
     ProcedureStep,
@@ -264,3 +269,149 @@ class AdminStudentProcedureTests(TestCase):
         res = self.client.get(self.URL, {"export": "excel"})
         self.assertEqual(res.status_code, 200)
         self.assertIn("spreadsheetml", res["Content-Type"])
+
+
+class ProcedureExportTests(TestCase):
+    URL = "/api/exams/admin/procedures"
+
+    def setUp(self):
+        self.program = Program.objects.create(name="General Nursing", abbreviation="RGN")
+        self.category = Category.objects.create(name="Basic Nursing Procedures")
+        self.with_cat = Procedure.objects.create(
+            program=self.program, name="Bed Bath", total_score=8, category=self.category
+        )
+        self.no_cat = Procedure.objects.create(
+            program=self.program, name="Hand Washing", total_score=4
+        )
+        for proc in (self.with_cat, self.no_cat):
+            for i in (1, 2):
+                ProcedureStep.objects.create(procedure=proc, description=f"Step {i}", step_order=i)
+        admin = User.objects.create_user(username="boss", password="x", role="admin")
+        self.client = APIClient()
+        self.client.force_authenticate(admin)
+
+    def test_csv_has_category(self):
+        res = self.client.get(self.URL, {"export": "csv"})
+        rows = list(csv.DictReader(io.StringIO(res.content.decode())))
+        self.assertIn("Category", rows[0])
+        by_name = {r["Procedure Name"]: r["Category"] for r in rows}
+        self.assertEqual(by_name["Bed Bath"], "Basic Nursing Procedures")
+        self.assertEqual(by_name["Hand Washing"], "")
+
+    def test_excel_category_column_matches_import_template(self):
+        res = self.client.get(self.URL, {"export": "excel"})
+        ws = load_workbook(io.BytesIO(res.content))["Procedures"]
+        self.assertEqual(
+            [c.value for c in ws[1]],
+            ["Name", "Program", "Total Score", "Category", "Steps Count"],
+        )
+        rows = {r[0]: r for r in ws.iter_rows(min_row=2, values_only=True)}
+        self.assertEqual(rows["Bed Bath"][3], "Basic Nursing Procedures")
+        self.assertEqual(rows["Bed Bath"][4], 2)
+
+    def test_export_query_count_does_not_grow_per_procedure(self):
+        # session/user + procedures + prefetched steps — not one per procedure
+        with self.assertNumQueries(2):
+            self.client.get(self.URL, {"export": "excel"})
+
+    def test_excel_export_reimports_with_category(self):
+        res = self.client.get(self.URL, {"export": "excel"})
+        self.with_cat.category = None
+        self.with_cat.save()
+        upload = io.BytesIO(res.content)
+        upload.name = "procedures.xlsx"
+        imp = self.client.post("/api/exams/procedures/import", {"file": upload})
+        self.assertIn(imp.status_code, (200, 201), imp.data)
+        self.with_cat.refresh_from_db()
+        self.no_cat.refresh_from_db()
+        self.assertEqual(self.with_cat.category, self.category)
+        self.assertIsNone(self.no_cat.category)
+        self.assertFalse(Category.objects.exclude(pk=self.category.pk).exists())
+
+    # ── Excel import reads columns by header name ──────────────────────────────
+
+    IMPORT_URL = "/api/exams/procedures/import"
+
+    def _xlsx(self, proc_rows, step_rows=None):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Procedures"
+        for r in proc_rows:
+            ws.append(r)
+        if step_rows is not None:
+            ws_steps = wb.create_sheet("Procedure Steps")
+            for r in step_rows:
+                ws_steps.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = "procedures.xlsx"
+        return buf
+
+    def test_import_reordered_columns_and_extra_columns(self):
+        upload = self._xlsx(
+            [
+                ["  category ", "Steps Count", "Total Score", "PROGRAM", "Name"],
+                ["Advanced", 3, 12, "General Nursing", "Catheterisation"],
+            ],
+            [
+                ["Step Description", "Procedure Name", "Step Order"],
+                ["Explain the procedure", "Catheterisation", 1],
+                ["Wash hands", "Catheterisation", 2],
+            ],
+        )
+        res = self.client.post(self.IMPORT_URL, {"file": upload})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["errors"], 0, res.data)
+        proc = Procedure.objects.get(name="Catheterisation")
+        self.assertEqual(proc.total_score, 12)
+        self.assertEqual(proc.category.name, "Advanced")
+        self.assertEqual(
+            list(proc.steps.values_list("step_order", "description")),
+            [(1, "Explain the procedure"), (2, "Wash hands")],
+        )
+        # "Steps Count" is ignored rather than becoming a category
+        self.assertFalse(Category.objects.filter(name="3").exists())
+
+    def test_import_old_export_with_steps_count_in_column_four(self):
+        upload = self._xlsx(
+            [
+                ["Name", "Program", "Total Score", "Steps Count"],
+                ["Bed Bath", "General Nursing", 10, 2],
+            ]
+        )
+        res = self.client.post(self.IMPORT_URL, {"file": upload})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.with_cat.refresh_from_db()
+        self.assertEqual(self.with_cat.total_score, 10)
+        self.assertEqual(self.with_cat.category, self.category)  # unchanged
+        self.assertEqual(Category.objects.count(), 1)
+
+    def test_import_without_category_column(self):
+        upload = self._xlsx(
+            [["Name", "Program", "Total Score"], ["Suturing", "General Nursing", 6]]
+        )
+        res = self.client.post(self.IMPORT_URL, {"file": upload})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIsNone(Procedure.objects.get(name="Suturing").category)
+
+    def test_import_missing_required_column_is_rejected(self):
+        upload = self._xlsx([["Name", "Total Score"], ["Suturing", 6]])
+        res = self.client.post(self.IMPORT_URL, {"file": upload})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Program", res.data["error"])
+        self.assertFalse(Procedure.objects.filter(name="Suturing").exists())
+
+        upload = self._xlsx(
+            [["Name", "Program", "Total Score"], ["Suturing", "General Nursing", 6]],
+            [["Procedure Name", "Description"], ["Suturing", "Clean the wound"]],
+        )
+        res = self.client.post(self.IMPORT_URL, {"file": upload})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Step Order", res.data["error"])
+        self.assertFalse(Procedure.objects.filter(name="Suturing").exists())
+
+    def test_pdf_export(self):
+        res = self.client.get(self.URL, {"export": "pdf"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res["Content-Type"], "application/pdf")

@@ -1905,9 +1905,9 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         )
 
     def _handle_export(self, request, export_format):
-        procedures = Procedure.objects.select_related("program").prefetch_related(
-            "steps"
-        )
+        procedures = Procedure.objects.select_related(
+            "program", "category"
+        ).prefetch_related("steps")
         program_id = request.query_params.get("program_id")
         if program_id and program_id != "all":
             procedures = procedures.filter(program_id=program_id)
@@ -1930,7 +1930,7 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         wb = Workbook()
         ws_proc = wb.active
         ws_proc.title = "Procedures"
-        headers_p = ["Name", "Program", "Total Score", "Steps Count"]
+        headers_p = ["Name", "Program", "Total Score", "Category", "Steps Count"]
         ws_proc.append(headers_p)
         for cell in ws_proc[1]:
             cell.font = Font(bold=True, color="FFFFFF")
@@ -1939,7 +1939,13 @@ class ProcedureViewSet(viewsets.ModelViewSet):
             )
         for proc in procedures:
             ws_proc.append(
-                [proc.name, proc.program.name, proc.total_score, proc.steps.count()]
+                [
+                    proc.name,
+                    proc.program.name,
+                    proc.total_score,
+                    proc.category.name if proc.category else "",
+                    len(proc.steps.all()),
+                ]
             )
 
         ws_steps = wb.create_sheet("Procedure Steps")
@@ -1950,7 +1956,7 @@ class ProcedureViewSet(viewsets.ModelViewSet):
                 start_color="70AD47", end_color="70AD47", fill_type="solid"
             )
         for proc in procedures:
-            for step in proc.steps.all().order_by("step_order"):
+            for step in proc.steps.all():
                 ws_steps.append([proc.name, step.step_order, step.description])
 
         for ws in (ws_proc, ws_steps):
@@ -1978,12 +1984,14 @@ class ProcedureViewSet(viewsets.ModelViewSet):
                 "Procedure Name",
                 "Program",
                 "Total Score",
+                "Category",
                 "Step Order",
                 "Step Description",
             ]
         )
         for proc in procedures:
-            steps = list(proc.steps.order_by("step_order"))
+            category = proc.category.name if proc.category else ""
+            steps = list(proc.steps.all())
             if steps:
                 for step in steps:
                     writer.writerow(
@@ -1991,13 +1999,14 @@ class ProcedureViewSet(viewsets.ModelViewSet):
                             proc.name,
                             proc.program.name,
                             proc.total_score,
+                            category,
                             step.step_order,
                             step.description,
                         ]
                     )
             else:
                 writer.writerow(
-                    [proc.name, proc.program.name, proc.total_score, "", ""]
+                    [proc.name, proc.program.name, proc.total_score, category, "", ""]
                 )
         return response
 
@@ -2012,14 +2021,16 @@ class ProcedureViewSet(viewsets.ModelViewSet):
         elements.append(Paragraph("Procedures and Steps", styles["Title"]))
         elements.append(Spacer(1, 20))
         for proc in procedures:
+            category = f" – {proc.category.name}" if proc.category else ""
             elements.append(
                 Paragraph(
-                    f"<b>{proc.name}</b> – {proc.program.name} (Total Score: {proc.total_score})",
+                    f"<b>{proc.name}</b> – {proc.program.name}{category} "
+                    f"(Total Score: {proc.total_score})",
                     styles["Heading2"],
                 )
             )
             elements.append(Spacer(1, 8))
-            steps = list(proc.steps.order_by("step_order"))
+            steps = list(proc.steps.all())
             if steps:
                 table_data = [["Step", "Description"]] + [
                     [str(s.step_order), s.description] for s in steps
@@ -2178,6 +2189,64 @@ class ImportProceduresView(APIView):
             }
         )
 
+    # ── Excel columns are matched by header name (case/space-insensitive), so
+    # column order and extra columns (e.g. "Steps Count" from an export) don't
+    # matter. field -> (accepted header names, required)
+    PROCEDURE_COLUMNS = {
+        "name": (("name", "procedure name"), True),
+        "program": (("program",), True),
+        "total_score": (("total score",), True),
+        "category": (("category",), False),
+    }
+    STEP_COLUMNS = {
+        "procedure_name": (("procedure name", "name", "procedure"), True),
+        "step_order": (("step order", "order", "step"), True),
+        "description": (("description", "step description"), True),
+    }
+
+    @staticmethod
+    def _normalise_header(value):
+        return " ".join(str(value).split()).lower() if value is not None else ""
+
+    def _map_headers(self, ws, columns):
+        """Return ({field: column index}, [missing required header names])."""
+        headers = [
+            self._normalise_header(v)
+            for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        ]
+        mapping, missing = {}, []
+        for field, (aliases, required) in columns.items():
+            idx = next((headers.index(a) for a in aliases if a in headers), None)
+            if idx is not None:
+                mapping[field] = idx
+            elif required:
+                missing.append(aliases[0].title())
+        return mapping, missing
+
+    def _missing_columns_response(self, sheet_name, ws, missing):
+        found = [
+            str(v)
+            for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            if v is not None
+        ]
+        return Response(
+            {
+                "error": (
+                    f'Sheet "{sheet_name}" is missing required column(s): '
+                    f"{', '.join(missing)}. Found: {', '.join(found) or 'no headers'}."
+                )
+            },
+            status=400,
+        )
+
+    @staticmethod
+    def _cell(row, idx):
+        return row[idx] if idx is not None and idx < len(row) else None
+
+    def _cell_text(self, row, idx):
+        value = self._cell(row, idx)
+        return str(value).strip() if value is not None else ""
+
     def _import_excel(self, file):
         try:
             wb = load_workbook(file, data_only=True)
@@ -2188,6 +2257,20 @@ class ImportProceduresView(APIView):
                 {"error": 'Sheet "Procedures" not found in Excel file'}, status=400
             )
 
+        ws_proc = wb["Procedures"]
+        proc_cols, missing = self._map_headers(ws_proc, self.PROCEDURE_COLUMNS)
+        if missing:
+            return self._missing_columns_response("Procedures", ws_proc, missing)
+
+        ws_steps = wb["Procedure Steps"] if "Procedure Steps" in wb.sheetnames else None
+        step_cols = None
+        if ws_steps is not None:
+            step_cols, missing = self._map_headers(ws_steps, self.STEP_COLUMNS)
+            if missing:
+                return self._missing_columns_response(
+                    "Procedure Steps", ws_steps, missing
+                )
+
         procs_created = procs_updated = steps_created = steps_updated = 0
         errors = []
         procedures_dict = {}
@@ -2195,23 +2278,21 @@ class ImportProceduresView(APIView):
         categories = {c.name: c for c in Category.objects.all()}
 
         with transaction.atomic():
-            ws_proc = wb["Procedures"]
             for row_num, row in enumerate(
                 ws_proc.iter_rows(min_row=2, values_only=True), start=2
             ):
                 if not any(row):
                     continue
                 try:
-                    name = str(row[0]).strip() if row[0] else ""
-                    prog_name = str(row[1]).strip() if row[1] else ""
+                    name = self._cell_text(row, proc_cols["name"])
+                    prog_name = self._cell_text(row, proc_cols["program"])
+                    raw_score = self._cell(row, proc_cols["total_score"])
                     try:
-                        total_score = int(row[2]) if row[2] else 0
+                        total_score = int(raw_score) if raw_score else 0
                     except (ValueError, TypeError):
                         errors.append(f"Procedures Row {row_num}: Invalid total score")
                         continue
-                    cat_name = (
-                        str(row[3]).strip() if len(row) > 3 and row[3] else ""
-                    )
+                    cat_name = self._cell_text(row, proc_cols.get("category"))
                     if not name:
                         continue
                     if prog_name:
@@ -2247,21 +2328,21 @@ class ImportProceduresView(APIView):
                 except Exception as e:
                     errors.append(f"Procedures Row {row_num}: {e}")
 
-            if "Procedure Steps" in wb.sheetnames:
-                ws_steps = wb["Procedure Steps"]
+            if ws_steps is not None:
                 for row_num, row in enumerate(
                     ws_steps.iter_rows(min_row=2, values_only=True), start=2
                 ):
                     if not any(row):
                         continue
                     try:
-                        name = str(row[0]).strip() if row[0] else ""
+                        name = self._cell_text(row, step_cols["procedure_name"])
+                        raw_order = self._cell(row, step_cols["step_order"])
                         try:
-                            order = int(row[1]) if row[1] else 0
+                            order = int(raw_order) if raw_order else 0
                         except (ValueError, TypeError):
                             errors.append(f"Steps Row {row_num}: Invalid step order")
                             continue
-                        desc = str(row[2]).strip() if row[2] else ""
+                        desc = self._cell_text(row, step_cols["description"])
                         if not name or not desc:
                             continue
                         matching = [
