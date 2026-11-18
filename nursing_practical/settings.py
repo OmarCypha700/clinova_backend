@@ -157,7 +157,9 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
-    "DEFAULT_THROTTLE_RATES": {"anon": "20/min", "user": "200/min"},
+    # "branding" covers the public login-page branding endpoints: a whole
+    # school often shares one IP, so they need more headroom than "anon".
+    "DEFAULT_THROTTLE_RATES": {"anon": "20/min", "user": "200/min", "branding": "300/min"},
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 100,
     "DEFAULT_RENDERER_CLASSES": (
@@ -220,8 +222,9 @@ CORS_ALLOW_CREDENTIALS = True
 # UNFOLD ADMIN
 # ─────────────────────────────────────────────
 UNFOLD = {
-    "SITE_TITLE": "ClinOva Clinical Practical Assessment App",
-    "SITE_HEADER": "ClinOva-DEV",
+    # Resolved per request from the institution branding in SiteSettings.
+    "SITE_TITLE": "exams.branding.site_title",
+    "SITE_HEADER": "exams.branding.site_header",
 }
 
 # ─────────────────────────────────────────────

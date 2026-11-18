@@ -1,4 +1,7 @@
 import csv
+import secrets
+
+from django.contrib.auth.password_validation import validate_password
 
 from django.db import transaction
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum, Value
@@ -22,14 +25,20 @@ from rest_framework.generics import (
     RetrieveAPIView,
     RetrieveUpdateDestroyAPIView,
 )
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import User
+from nursing_practical.version import __version__
 
+from .branding import PRODUCT_NAME, LogoError, logo_url, process_logo
 from .filters import StudentFilter
+from .grading import grade_for, percentage
 from .models import (
     CARE_PLAN_MAX_SCORE,
     CARE_PLAN_MAX_SLOTS,
@@ -127,6 +136,105 @@ class SiteSettingsView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class PublicReadMixin:
+    """
+    GET is public (the login page needs branding before anyone signs in) and
+    skips authentication so a stale cookie cannot break it; other methods use
+    the normal cookie auth and are admin-only.
+    """
+
+    throttle_scope = "branding"
+
+    def get_authenticators(self):
+        if self.request.method == "GET":
+            return []
+        return super().get_authenticators()
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [AllowAny()]
+        return [IsAuthenticated(), IsAdmin()]
+
+    def get_throttles(self):
+        if self.request.method == "GET":
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
+
+
+class VersionView(APIView):
+    """
+    GET /exams/version – the backend release version, for the admin
+    Settings page. Admin-only: no need to tell anonymous visitors exactly
+    which release (and so which known bugs) a deployment is running.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        return Response({"version": __version__})
+
+
+class BrandingView(PublicReadMixin, APIView):
+    """GET /exams/branding – public institution branding for the login page."""
+
+    def get(self, request):
+        s = SiteSettings.get()
+        return Response(
+            {
+                "product_name": PRODUCT_NAME,
+                "institution_name": s.institution_name,
+                "short_name": s.short_name,
+                "brand_color": s.brand_color,
+                "logo_url": logo_url(s),
+            }
+        )
+
+
+class BrandingLogoView(PublicReadMixin, APIView):
+    """
+    GET    /exams/branding/logo – the logo image (public)
+    POST   /exams/branding/logo – upload/replace (admin, multipart field "logo")
+    DELETE /exams/branding/logo – remove (admin)
+    """
+
+    parser_classes = [MultiPartParser]
+
+    def get(self, request):
+        s = SiteSettings.get()
+        if not s.logo:
+            raise NotFound("No logo has been set.")
+        response = HttpResponse(bytes(s.logo), content_type=s.logo_content_type or "image/png")
+        response["X-Content-Type-Options"] = "nosniff"
+        # The URL is versioned (?v=<timestamp>), so it can be cached for long.
+        response["Cache-Control"] = "public, max-age=86400" if request.GET.get("v") else "no-cache"
+        return response
+
+    def post(self, request):
+        upload = request.FILES.get("logo")
+        if not upload:
+            return Response({"logo": ["No file provided."]}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            png = process_logo(upload)
+        except LogoError as e:
+            return Response({"logo": [str(e)]}, status=status.HTTP_400_BAD_REQUEST)
+        s = SiteSettings.get()
+        s.logo = png
+        s.logo_content_type = "image/png"
+        s.logo_updated_at = timezone.now()
+        s.updated_by = request.user
+        s.save()
+        return Response({"logo_url": logo_url(s)}, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        s = SiteSettings.get()
+        s.logo = None
+        s.logo_content_type = ""
+        s.logo_updated_at = timezone.now()
+        s.updated_by = request.user
+        s.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 # ===============================================
 # GENERAL VIEWS
 # ===============================================
@@ -159,15 +267,28 @@ class ProgramViewSet(viewsets.ModelViewSet):
 
 
 class LevelListCreateView(ListCreateAPIView):
+    """
+    GET  – any authenticated user (examiner level filter, admin pages)
+    POST – admin only
+    """
+
     queryset = Level.objects.all()
     serializer_class = LevelSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
 
 
 class LevelDetailView(RetrieveUpdateDestroyAPIView):
     queryset = Level.objects.all()
     serializer_class = LevelSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
 
 
 # ─────────────────────────────────────────────
@@ -1002,18 +1123,21 @@ class ReconciliationView(RetrieveAPIView):
             .first()
         )
 
+        # Scoring is blind: both examiners' scores are revealed only to the
+        # examiner allowed to reconcile (same rule as SaveReconciliationView),
+        # and only once scoring is complete. Never create records on a read.
         if not obj:
-            obj = StudentProcedure.objects.create(
-                student_id=self.kwargs["student_id"],
-                procedure_id=self.kwargs["procedure_id"],
-                examiner_a=self.request.user,
-                examiner_b=self.request.user,
+            raise NotFound("No assessment exists for this student and procedure yet.")
+
+        if not obj.can_user_reconcile(self.request.user):
+            raise PermissionDenied(
+                "Reconciliation is available only to the examiner assigned to "
+                "reconcile, after both examiners have finished scoring."
             )
 
-        if obj.status == "scored" and not obj.assigned_reconciler:
-            if obj.can_user_reconcile(self.request.user):
-                obj.assigned_reconciler = self.request.user
-                obj.save(update_fields=["assigned_reconciler"])
+        if not obj.assigned_reconciler:
+            obj.assigned_reconciler = self.request.user
+            obj.save(update_fields=["assigned_reconciler"])
 
         return obj
 
@@ -1241,7 +1365,6 @@ class ExaminerViewSet(viewsets.ModelViewSet):
     ordering_fields = ["username", "first_name", "date_joined", "is_active"]
     ordering = ["username"]
  
-    DEFAULT_IMPORT_PASSWORD = "Change123!"
  
     def get_queryset(self):
         qs = User.objects.filter(role="examiner")
@@ -1346,6 +1469,7 @@ class ExaminerViewSet(viewsets.ModelViewSet):
     def _process_import(self, rows):
         created = updated = errors = 0
         error_details = []
+        generated_details = []
         success_details = []
  
         for row_num, row in enumerate(rows, start=2):
@@ -1388,27 +1512,37 @@ class ExaminerViewSet(viewsets.ModelViewSet):
                     existing.email = email or existing.email
                     existing.is_active = is_active
                     if password:
+                        validate_password(password, user=existing)
                         existing.set_password(password)
                     existing.save()
                     updated += 1
                 else:
-                    # Create new examiner
-                    effective_password = password or self.DEFAULT_IMPORT_PASSWORD
+                    # Create new examiner; a blank password gets a unique
+                    # random one instead of a shared default.
+                    if password:
+                        validate_password(
+                            password,
+                            user=User(username=username, first_name=first_name,
+                                      last_name=last_name, email=email),
+                        )
+                    generated = None if password else secrets.token_urlsafe(9)
                     User.objects.create_user(
                         username=username,
                         first_name=first_name,
                         last_name=last_name,
                         email=email,
-                        password=effective_password,
+                        password=password or generated,
                         role="examiner",
                         is_active=is_active,
                     )
                     created += 1
                     full = f"{first_name} {last_name}".strip() or username
-                    success_details.append(
-                        f"{full} (@{username})"
-                        + ("" if password else " — default password assigned")
-                    )
+                    if generated:
+                        generated_details.append(
+                            f"{full} (@{username}) — temporary password: {generated}"
+                        )
+                    else:
+                        success_details.append(f"{full} (@{username})")
  
             except Exception as e:
                 error_details.append(f"Row {row_num}: {e}")
@@ -1421,7 +1555,8 @@ class ExaminerViewSet(viewsets.ModelViewSet):
                 "updated": updated,
                 "errors": errors,
                 "error_details": error_details[:20],
-                "success_details": success_details[:20],
+                # Generated passwords are shown only here, so never truncate them.
+                "success_details": generated_details + success_details[:20],
             }
         )
  
@@ -1453,7 +1588,7 @@ class ExaminerViewSet(viewsets.ModelViewSet):
             [""],
             ["Notes:"],
             ["  - Username must be unique across all users."],
-            ["  - Password is optional. If left blank, a default password is assigned."],
+            ["  - Password is optional. If left blank for a new examiner, a unique temporary password is generated and shown once after the import."],
             ["  - Status accepts: Yes / No (defaults to Yes / Active)."],
             ["  - Existing examiners with the same username will be updated."],
         ]:
@@ -2097,9 +2232,10 @@ class ImportProceduresView(APIView):
             if not name:
                 continue
             if name not in groups:
+                # A "Total Score" column, if present, is ignored: the total
+                # is always calculated from the steps.
                 groups[name] = {
                     "program_name": row.get("Program", "").strip(),
-                    "total_score": row.get("Total Score", "").strip(),
                     "category_name": row.get("Category", "").strip(),
                     "steps": [],
                 }
@@ -2117,11 +2253,6 @@ class ImportProceduresView(APIView):
         categories = {c.name: c for c in Category.objects.all()}
 
         for name, data in groups.items():
-            try:
-                total_score = int(data["total_score"])
-            except (ValueError, TypeError):
-                errors.append(f"Procedure '{name}': Invalid total score")
-                continue
             prog_name = data["program_name"]
             if prog_name:
                 prog = programs.get(prog_name)
@@ -2134,7 +2265,7 @@ class ImportProceduresView(APIView):
             else:
                 target_programs = list(programs.values())
 
-            defaults = {"total_score": total_score}
+            defaults = {}
             cat_name = data["category_name"]
             if cat_name:
                 if cat_name not in categories:
@@ -2174,10 +2305,11 @@ class ImportProceduresView(APIView):
     # ── Excel columns are matched by header name (case/space-insensitive), so
     # column order and extra columns (e.g. "Steps Count" from an export) don't
     # matter. field -> (accepted header names, required)
+    # There is no Total Score column: totals are calculated from the steps,
+    # and a Total Score column in older files or exports is simply ignored.
     PROCEDURE_COLUMNS = {
         "name": (("name", "procedure name"), True),
         "program": (("program",), True),
-        "total_score": (("total score",), True),
         "category": (("category",), False),
     }
     STEP_COLUMNS = {
@@ -2268,12 +2400,6 @@ class ImportProceduresView(APIView):
                 try:
                     name = self._cell_text(row, proc_cols["name"])
                     prog_name = self._cell_text(row, proc_cols["program"])
-                    raw_score = self._cell(row, proc_cols["total_score"])
-                    try:
-                        total_score = int(raw_score) if raw_score else 0
-                    except (ValueError, TypeError):
-                        errors.append(f"Procedures Row {row_num}: Invalid total score")
-                        continue
                     cat_name = self._cell_text(row, proc_cols.get("category"))
                     if not name:
                         continue
@@ -2288,7 +2414,7 @@ class ImportProceduresView(APIView):
                     else:
                         target_progs = list(programs.values())
 
-                    defaults = {"total_score": total_score}
+                    defaults = {}
                     if cat_name:
                         if cat_name not in categories:
                             categories[cat_name] = Category.objects.create(
@@ -2372,7 +2498,7 @@ class DownloadProcedureTemplateView(APIView):
         wb = Workbook()
         ws_proc = wb.active
         ws_proc.title = "Procedures"
-        ws_proc.append(["Name", "Program", "Total Score", "Category"])
+        ws_proc.append(["Name", "Program", "Category"])
         for cell in ws_proc[1]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(
@@ -2382,7 +2508,6 @@ class DownloadProcedureTemplateView(APIView):
             [
                 "Vital Signs Assessment",
                 "Bachelor of Science in Nursing",
-                20,
                 "Basic Nursing Procedures",
             ]
         )
@@ -2390,7 +2515,6 @@ class DownloadProcedureTemplateView(APIView):
             [
                 "IV Catheter Insertion",
                 "Bachelor of Science in Nursing",
-                20,
                 "Advanced Nursing Procedures",
             ]
         )
@@ -2415,6 +2539,12 @@ class DownloadProcedureTemplateView(APIView):
         ws_inst.append(["See column headers for required fields."])
         ws_inst.append(
             [
+                "There is no Total Score column: each procedure's total is "
+                "calculated automatically as its number of steps x 4."
+            ]
+        )
+        ws_inst.append(
+            [
                 "Category is optional. Leave blank to leave an existing "
                 "procedure's category unchanged, or create a new one automatically "
                 "if the name doesn't already exist."
@@ -2432,8 +2562,10 @@ class DownloadProcedureTemplateView(APIView):
 
 
 class ProcedureStepViewSet(viewsets.ModelViewSet):
+    # Admin-only (reads included): examiners get steps from the procedure
+    # detail endpoint, never from this CRUD endpoint.
     serializer_class = ProcedureStepCreateUpdateSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def get_queryset(self):
         qs = ProcedureStep.objects.select_related("procedure")
@@ -2673,7 +2805,7 @@ class StudentGradesView(APIView):
             total = proc_score + cp_score
             # A submitted care plan counts toward the max even if it scored 0
             max_score = proc_max + cp_max
-            pct = round((total / max_score * 100), 1) if max_score > 0 else 0.0
+            pct = percentage(total, max_score)
             result.append(
                 {
                     "student_id": s.id,
@@ -2699,15 +2831,7 @@ class StudentGradesView(APIView):
         return result
 
     def _calculate_grade(self, pct):
-        if pct == 0:
-            return "N/A"
-        if pct >= 80:
-            return "Distinction"
-        if pct >= 70:
-            return "Credit"
-        if pct >= 60:
-            return "Pass"
-        return "Fail"
+        return grade_for(pct)
 
     # ------------------------------------------------------------------
     # Export handlers

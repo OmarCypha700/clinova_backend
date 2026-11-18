@@ -1,6 +1,8 @@
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.db.models import Sum
+from django.db.models.signals import post_delete, post_save, pre_save
+from django.dispatch import receiver
 
 from accounts.models import User
 
@@ -63,10 +65,17 @@ class Category(models.Model):
         return self.name
 
 
+# Every step is scored 0–4, so a procedure's maximum is its step count × 4.
+POINTS_PER_STEP = 4
+
+
 class Procedure(models.Model):
     program = models.ForeignKey(Program, on_delete=models.CASCADE, related_name="procedures")
     name = models.CharField(max_length=255)
-    total_score = models.PositiveIntegerField()
+    # Derived, never entered: kept equal to steps × POINTS_PER_STEP by the
+    # ProcedureStep signals below. Stored (not computed on read) because grade
+    # and export queries sum it in the database.
+    total_score = models.PositiveIntegerField(default=0, editable=False)
     category = models.ForeignKey(
         Category,
         on_delete=models.SET_NULL,
@@ -82,6 +91,13 @@ class Procedure(models.Model):
     def __str__(self):
         return f"{self.name} ({self.program})"
 
+    def save(self, *args, **kwargs):
+        # Never write back a stale total held in memory: an existing procedure
+        # always saves the total its steps add up to right now.
+        if self.pk:
+            self.total_score = self.steps.count() * POINTS_PER_STEP
+        super().save(*args, **kwargs)
+
 
 class ProcedureStep(models.Model):
     procedure = models.ForeignKey(
@@ -96,6 +112,40 @@ class ProcedureStep(models.Model):
 
     def __str__(self):
         return f"{self.procedure.name} - Step {self.step_order}"
+
+
+def recalculate_total_score(procedure_id):
+    """Set a procedure's total_score from its current number of steps."""
+    count = ProcedureStep.objects.filter(procedure_id=procedure_id).count()
+    # update() rather than save(): no signals, and harmless if the procedure
+    # is itself being deleted (the cascade deletes its steps first).
+    Procedure.objects.filter(pk=procedure_id).update(total_score=count * POINTS_PER_STEP)
+
+
+# Keep total_score in step with the steps however they change: admin screens,
+# spreadsheet imports, the Django admin and management commands all go
+# through save()/delete(). (bulk_create/update would bypass these; call
+# recalculate_total_score() yourself if you ever use them on steps.)
+@receiver(pre_save, sender=ProcedureStep)
+def _remember_previous_procedure(sender, instance, **kwargs):
+    instance._previous_procedure_id = (
+        sender.objects.filter(pk=instance.pk).values_list("procedure_id", flat=True).first()
+        if instance.pk
+        else None
+    )
+
+
+@receiver(post_save, sender=ProcedureStep)
+def _step_saved(sender, instance, **kwargs):
+    recalculate_total_score(instance.procedure_id)
+    previous = getattr(instance, "_previous_procedure_id", None)
+    if previous and previous != instance.procedure_id:  # step moved
+        recalculate_total_score(previous)
+
+
+@receiver(post_delete, sender=ProcedureStep)
+def _step_deleted(sender, instance, **kwargs):
+    recalculate_total_score(instance.procedure_id)
 
 
 class StudentProcedure(models.Model):
@@ -346,6 +396,34 @@ class SiteSettings(models.Model):
             "programs and levels are eligible."
         ),
     )
+
+    # ── Institution branding ──────────────────────────────────────────────────
+    # Shown on the login page, browser title, installed-app name and admin header.
+    institution_name = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Full institution name, e.g. 'Nursing and Midwifery Training College, Tanoso'.",
+    )
+    short_name = models.CharField(
+        max_length=30,
+        blank=True,
+        default="",
+        help_text="Short name or code, e.g. 'CNMT'. Used where space is tight.",
+    )
+    brand_color = models.CharField(
+        max_length=7,
+        blank=True,
+        default="",
+        validators=[RegexValidator(r"^#[0-9a-fA-F]{6}$", "Use a hex colour such as #0b3b6f.")],
+        help_text="Accent colour for buttons, selected navigation and badges. Blank uses the ClinOva default.",
+    )
+    # The logo lives in the database (not on disk) so it survives redeploys on
+    # hosts with ephemeral storage and is included in database backups. It is
+    # always a re-encoded PNG produced by exams.branding.process_logo().
+    logo = models.BinaryField(null=True, blank=True, editable=False)
+    logo_content_type = models.CharField(max_length=50, blank=True, default="", editable=False)
+    logo_updated_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     # ── Placeholder for future flags ──────────────────────────────────────────
     # allow_examiner_reassignment = models.BooleanField(default=False, ...)
