@@ -2,8 +2,16 @@
 __pycache__/
 *.pyc
 .env
+.env.*
 .DS_Store
+# Databases and any copies/backups of them (e.g. db.sqlite3.bak-*, *.sqlite3-wal)
 *.sqlite3
+*.sqlite3*
+*.db
+*.bak
+*.bak-*
+*.dump
+*.sql.gz
 .idea/
 /staticfiles/
 /static/

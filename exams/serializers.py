@@ -1,4 +1,8 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+
+from .branding import logo_url
 from rest_framework import serializers
 
 from .models import (
@@ -60,10 +64,29 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "care_plan_lock_on_submit",
             "multiple_care_plans_enabled",
             "care_plan_eligibility",
+            "institution_name",
+            "short_name",
+            "brand_color",
+            "logo_url",
             "updated_at",
             "updated_by_name",
         ]
-        read_only_fields = ["updated_at", "updated_by_name"]
+        read_only_fields = ["updated_at", "updated_by_name", "logo_url"]
+
+    logo_url = serializers.SerializerMethodField()
+
+    def get_logo_url(self, obj):
+        return logo_url(obj)
+
+    def validate_institution_name(self, value):
+        return value.strip()
+
+    def validate_short_name(self, value):
+        return value.strip()
+
+    def validate_brand_color(self, value):
+        # Format is checked by the model's RegexValidator; store lowercase.
+        return value.strip().lower()
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -168,6 +191,16 @@ class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["username", "email", "first_name", "last_name", "role", "password"]
+
+    def validate(self, attrs):
+        password = attrs.get("password")
+        if password:
+            candidate = User(**{k: v for k, v in attrs.items() if k != "password"})
+            try:
+                validate_password(password, user=candidate)
+            except DjangoValidationError as e:
+                raise serializers.ValidationError({"password": list(e.messages)})
+        return attrs
 
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)
