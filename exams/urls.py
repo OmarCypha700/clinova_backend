@@ -16,7 +16,8 @@ from .views import (AdminStudentProcedureViewSet, AutosaveStepScoreView, BulkDel
                     ProcedureViewSet, ProgramListView, ProgramViewSet,
                     ReconciliationView, SaveReconciliationView,
                     SiteSettingsView, StudentByProgramView, StudentDetailView,
-                    StudentGradesView, StudentViewSet)
+                    BrandingView, BrandingLogoView,
+                    StudentGradesView, StudentViewSet, VersionView)
 
 # Router for viewsets
 router = DefaultRouter(trailing_slash=False)
@@ -30,6 +31,9 @@ router.register(r'admin/student-procedures', AdminStudentProcedureViewSet, basen
 urlpatterns = [
     # Site settings
     path("settings", SiteSettingsView.as_view(), name="site-settings"),
+    path("branding", BrandingView.as_view(), name="branding"),
+    path("branding/logo", BrandingLogoView.as_view(), name="branding-logo"),
+    path("version", VersionView.as_view(), name="version"),
 
     # Standard endpoints (BEFORE router)
     path("programs", ProgramListView.as_view()),

@@ -71,6 +71,10 @@ class ProcedureResource(resources.ModelResource):
         attribute="category",
         widget=widgets.ForeignKeyWidget(Category, "name"),
     )
+    # Exported for reference, never imported: it's calculated from the steps.
+    total_score = fields.Field(
+        attribute="total_score", column_name="total_score", readonly=True
+    )
 
     class Meta:
         model = Procedure
